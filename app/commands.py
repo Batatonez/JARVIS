@@ -9,6 +9,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Callable
 
+from app.status import build_status_snapshot
+
 if TYPE_CHECKING:
     from app.core import JarvisCore
 
@@ -48,26 +50,22 @@ class CommandRegistry:
             "/help     Mostra esta lista de comandos.\n"
             "/status   Mostra o status atual do JARVIS Core.\n"
             "/memory   Mostra se profile.md e preferences.md estão carregados.\n"
+            "/new      Inicia uma nova conversa (limpa o histórico da sessão; alias: /reset).\n"
             "/clear    Limpa a tela do terminal.\n"
             "/exit     Encerra o JARVIS (alias: /quit)."
         )
 
     def _cmd_status(self, args: str) -> str:
-        core = self._core
-        ai = core.ai_service
-        memory_ok = (
-            core.memory_service.is_profile_available()
-            or core.memory_service.is_preferences_available()
-        )
+        snapshot = build_status_snapshot(self._core)
         return (
             "JARVIS Core\n"
             "Status: online\n"
-            f"Versão: {core.settings.core_version}\n"
-            f"Estado: {core.state.value}\n"
-            f"Memória: {'disponível' if memory_ok else 'indisponível'}\n"
-            f"IA: {'configurada' if ai.is_available() else 'não configurada'}\n"
-            f"Backend de IA: {ai.backend_name}\n"
-            f"Sessão: {'ativa' if ai.session_active else 'inativa'}"
+            f"Versão: {snapshot.core_version}\n"
+            f"Estado: {snapshot.state}\n"
+            f"Memória: {'disponível' if snapshot.memory_available else 'indisponível'}\n"
+            f"IA: {'configurada' if snapshot.ai_configured else 'não configurada'}\n"
+            f"Backend de IA: {snapshot.ai_backend}\n"
+            f"Sessão: {'ativa' if snapshot.ai_session_active else 'inativa'}"
         )
 
     def _cmd_memory(self, args: str) -> str:

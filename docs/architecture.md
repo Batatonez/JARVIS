@@ -4,52 +4,105 @@
 
 ## Estado atual em uma frase
 
-**JARVIS Core v0.3**: um núcleo executável por terminal, assíncrono, com a arquitetura do **Claude Agent SDK** pronta para uma sessão de conversa contínua via `ClaudeAgentProvider` — mas sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje é o fallback seguro (`UnavailableAIService`): o JARVIS inicia, responde comandos e avisa que a IA não está configurada, sem travar e sem pedir credencial.
+**JARVIS Backend v0.4**: uma Application Layer (`JarvisApplication`) estável entre qualquer frontend e o Core, com histórico de conversa em runtime, stream de eventos, status consolidado e cancelamento — sobre o mesmo `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` da v0.3, sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje continua sendo o fallback seguro (`UnavailableAIService`).
 
 ## Visão geral (arquitetura-alvo, planejada)
 
 ```
-Usuário
-  ↓
-App / HUD
-  ↓
-Orquestrador JARVIS
-  ↓
-Claude Code
-  ↓
-Ferramentas / Skills / MCP / Subagentes
-  ↓
-Sistema operacional / APIs / serviços
+                    ┌─────────────────────┐
+                    │  FUTURE FRONTENDS   │
+                    │ HUD / Voice / CLI   │
+                    └──────────┬──────────┘
+                               │
+                               ↓
+                    ┌─────────────────────┐
+                    │ JARVIS APPLICATION  │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    ↓                     ↓
+                 Core                Event Stream
+                    │
+               Orchestrator
+                    │
+        ┌───────────┼────────────┐
+        ↓           ↓            ↓
+    AIService     Memory      Services
+        ↓
+ClaudeAgentProvider
+
+
+FUTURO (planejado, não implementado):
+
+Orchestrator
+    ↓
+AgentOrchestration
+    ↓
+Ruflo
 ```
 
-Em paralelo a esse fluxo principal:
+Em paralelo:
 
 ```
 Claude Code  ↔  Memory
 Hooks        →  App / HUD
-Voice STT    →  Orquestrador
-Orquestrador →  TTS
+Voice STT    →  Application
+Application  →  TTS
 ```
 
-## Como isso mapeia para o código hoje (v0.3)
+## Application Layer — a fronteira entre Core e frontend
 
-Como ainda não existe HUD, "App/HUD" e "Orquestrador" desta versão são realizados dentro do mesmo pacote `app/`, com uma interface de terminal como única apresentação. Todo o caminho de mensagem comum é assíncrono (`asyncio`), com um único event loop criado em `main.py`:
+**Status: implementado (v0.4).** `JarvisApplication` (`app/application.py`) é a **única** porta de entrada que um frontend deve usar — terminal hoje, HUD/voz no futuro. Documentação completa da API pública em [`docs/application-api.md`](application-api.md); aqui vai só o desenho:
+
+```
+Frontend (terminal, futuro HUD, futura voz)
+    ↓
+JarvisApplication
+    ├── send_message() / cancel_current_request() / new_conversation()
+    ├── get_status() / get_messages() / memory_status()
+    ├── subscribe() / unsubscribe() / events()
+    └── permissions  (PermissionService — fundação, não conectada a ferramentas)
+    ↓
+JarvisCore  →  Orchestrator  →  AIService  →  ClaudeAgentProvider
+```
+
+Um frontend **nunca** deve fazer `from services.claude_agent_provider import ClaudeAgentProvider`, `memory_service.get_profile()` ou `orchestrator.handle(...)` diretamente — só `JarvisApplication`. Modelos de domínio (`app/models.py`: `Message`, `AssistantResponse`, `StatusSnapshot`, `AppEvent`, `PermissionRequest`, etc.) usam só a biblioteca padrão e nunca carregam um tipo do Claude Agent SDK — testado explicitamente (`tests/test_application.py::NoSdkLeakageTests`).
+
+**Conversation vs. Memory** — dois conceitos deliberadamente separados:
+- `app/conversation.py` (`Conversation`) — histórico da sessão de chat atual, só em RAM, com limite configurável (`JARVIS_MAX_CONVERSATION_MESSAGES`, padrão 200). Desaparece ao encerrar o JARVIS. Nunca é escrito em `memory/` ou `daily/`.
+- `memory/` — memória persistente sobre o usuário (perfil, preferências). Somente leitura em runtime, inalterada por conversas.
+
+**Concorrência** — política escolhida: **uma requisição ativa por conversa**, rejeição limpa (não fila). `send_message()` verifica `self._current_request_task`; se ocupado, devolve `AssistantResponse(status=ERROR, error.code=JARVIS_BUSY)` na hora, sem enfileirar. Mais simples e previsível para uma GUI (estado "ocupado" explícito) do que uma fila implícita — ver `tests/test_application.py::BusyAndConcurrencyTests`.
+
+**Cancelamento** — `cancel_current_request()` usa `asyncio.Task.cancel()` (nunca mata processo). O `finally` já existente em `Orchestrator._handle_message` garante que o estado volta para `IDLE` mesmo quando a tarefa é cancelada no meio do caminho — testado em `tests/test_application.py::CancellationTests`.
+
+**Erros para a interface** — `send_message()` nunca propaga uma exceção crua para quem chama: falhas esperadas (`AI_UNAVAILABLE`, `JARVIS_BUSY`) e inesperadas (`INTERNAL_ERROR`) sempre viram `AssistantResponse` com `status`/`error.code` estruturados. O frontend distingue sucesso/cancelado/erro sem nunca precisar analisar texto humano.
+
+**Eventos** — `JarvisApplication` relaia uma parte dos eventos do `EventBus` interno (`jarvis.started/stopped`, `state.changed`, `ai.connected/disconnected`) e emite diretamente os seus próprios, mais ricos que os internos (`message.received`, `response.started/completed/failed`, `conversation.started/cleared`, `jarvis.stopping`, `permission.requested/resolved`) — nenhum evento é emitido duas vezes pelo mesmo motivo em camadas diferentes.
+
+**Streaming (preparado, não exposto)** — `send_message()` devolve o texto final via `AssistantResponse.content` (`str`), mas o contrato de eventos já inclui `response.started` → `response.completed`/`response.failed`; adicionar `response.delta` para token-a-token é uma extensão local a `send_message()`/`ClaudeAgentProvider.ask()`, sem mudar a API pública.
+
+## Como isso mapeia para o código hoje (v0.4)
+
+Como ainda não existe HUD, o terminal é o primeiro (e único) frontend real, falando com `JarvisApplication` — não mais diretamente com `JarvisCore`. Todo o caminho é assíncrono (`asyncio`), com um único event loop criado em `main.py`:
 
 ```
 main.py  →  asyncio.run(...)
   ↓
 app/terminal.py        (apresentação: loop de input/print no terminal — async)
   ↓
+app/application.py     (JarvisApplication: fronteira estável — async)
+  ↓
 app/core.py             (JarvisCore: fachada, estado, ciclo de vida — async)
   ↓
 app/orchestrator.py     (Orchestrator: comando vs. mensagem — async)
   ↓
-app/commands.py         (comandos internos, síncronos: /help /status /memory /clear /exit)
+app/commands.py         (comandos internos, síncronos: /help /status /memory /new /clear /exit)
   ↓
 services/                (memory_service, ai_service + create_ai_service, claude_agent_provider, runtime_identity, event_bus)
 ```
 
-Isso é uma **implementação parcial e provisória** da camada "App/HUD → Orquestrador" do diagrama acima — não uma arquitetura diferente. Quando o HUD gráfico for criado, ele deve reutilizar `JarvisCore`/`Orchestrator` sem duplicar lógica, trocando apenas `app/terminal.py` por uma interface gráfica (ou somando as duas): nenhuma delas conhece `claude_agent_sdk` diretamente.
+Quando o HUD gráfico for criado, ele deve falar com o mesmo `JarvisApplication` sem duplicar lógica — apenas somar uma nova camada de apresentação ao lado de (ou no lugar de) `app/terminal.py`.
 
 ## Camada de IA: AIService → ClaudeAgentProvider
 
@@ -121,7 +174,7 @@ memory/profile.md, memory/preferences.md
     ↓
 MemoryService (leitura somente-leitura)
     ↓
-JarvisCore._build_memory_context()   # contexto controlado
+JarvisCore.build_memory_context()   # contexto controlado
     ↓
 AIService.start(memory_context=...)
     ↓
@@ -136,12 +189,12 @@ O Core lê perfil e preferências via `MemoryService` e monta um contexto contro
 Ponto de entrada de tudo: fala ou digita um pedido, e recebe respostas em texto e/ou voz.
 
 ### App / HUD — [`app/`](../app/)
-**Status: implementado parcialmente (terminal).**
-Hoje é uma interface de terminal (`app/terminal.py`) fina — só lê input, imprime output e trata encerramento (Ctrl+C, EOF, `/exit`), rodando dentro do event loop único criado por `main.py`. O pacote `app/` também contém o núcleo de execução (`JarvisCore`, `Orchestrator`, `commands.py`, `state.py`), que fica aqui por ser a aplicação em si — a parte que será reaproveitada quando o HUD gráfico existir. HUD visual e voz **não** existem ainda.
+**Status: implementado parcialmente (terminal + Application Layer).**
+Hoje é uma interface de terminal (`app/terminal.py`) fina — só lê input, imprime output e trata encerramento (Ctrl+C, EOF, `/exit`), falando com `JarvisApplication` (ver seção acima). O pacote `app/` também contém o núcleo de execução (`JarvisCore`, `Orchestrator`, `commands.py`, `state.py`) e a Application Layer (`application.py`, `models.py`, `conversation.py`, `status.py`, `permissions.py`) — tudo fica aqui por ser a aplicação em si, a parte que será reaproveitada quando o HUD gráfico existir. HUD visual e voz **não** existem ainda.
 
 ### Orquestrador JARVIS — [`app/orchestrator.py`](../app/orchestrator.py)
 **Status: implementado.**
-Decide o que fazer com cada entrada: comando interno (`CommandRegistry`, síncrono) ou mensagem comum (`AIService`, assíncrono). Integra IA com estados (`THINKING` → `IDLE`, ou `THINKING` → `ERROR` → `IDLE` em falha) e eventos (`ai.request.started/completed/failed`). Não conhece `claude_agent_sdk`, nem tipos internos do SDK, nem autenticação. Consultar memória ativamente por conversa, chamar ferramentas, pedir confirmação e usar subagentes/Ruflo continuam **planejados**.
+Decide o que fazer com cada entrada: comando interno (`CommandRegistry`, síncrono) ou mensagem comum (`AIService`, assíncrono) — devolvendo o texto cru da resposta (formatação de apresentação, como o prefixo "JARVIS: ", é responsabilidade de `JarvisApplication`/terminal). Integra IA com estados (`THINKING` → `IDLE`, ou `THINKING` → `ERROR` → `IDLE` em falha) e eventos internos (`ai.request.started/completed/failed`). Não conhece `claude_agent_sdk`, nem tipos internos do SDK, nem autenticação, nem `JarvisApplication` (a dependência é de cima para baixo). Chamar ferramentas, pedir confirmação e usar subagentes/Ruflo continuam **planejados**.
 
 ### Claude Code
 **Status: usado como agente de desenvolvimento (fora do runtime); arquitetura de runtime preparada via `ClaudeAgentProvider`, não ativada neste ambiente.**
@@ -150,7 +203,7 @@ Como agente de desenvolvimento, interpreta pedidos, raciocina, decide quais ferr
 ### Serviços internos — [`services/`](../services/)
 **Status: implementado.**
 - `memory_service.py` — leitura somente-leitura de `memory/profile.md` e `memory/preferences.md`, com tratamento de erro para arquivo ausente/ilegível. Escrita de memória continua planejada.
-- `event_bus.py` — pub/sub síncrono em memória. Eventos hoje: `jarvis.started`, `jarvis.stopped`, `state.changed`, `message.received`, `message.responded`, `command.executed`, `ai.connecting`, `ai.connected`, `ai.disconnected`, `ai.request.started`, `ai.request.completed`, `ai.request.failed`.
+- `event_bus.py` — pub/sub síncrono em memória, **interno** (`Core`/`Orchestrator`). Eventos hoje: `jarvis.started`, `jarvis.stopped`, `state.changed`, `message.received`, `message.responded`, `command.executed`, `ai.connecting`, `ai.connected`, `ai.disconnected`, `ai.request.started`, `ai.request.completed`, `ai.request.failed`, `permission.requested`, `permission.resolved`. Não confundir com o `AppEvent` de `JarvisApplication` (ver seção "Application Layer") — este é interno, aquele é o contrato estável para frontends.
 - `ai_service.py` — interface `AIService` (agora com lifecycle assíncrono `start`/`ask`/`close`, mais `session_active` e `backend_name`), `UnavailableAIService`, e `create_ai_service(settings)`. Não importa o Agent SDK.
 - `claude_agent_provider.py` — `ClaudeAgentProvider`: único módulo que importa `claude_agent_sdk`. Erros oficiais do SDK (`CLINotFoundError`, `CLIConnectionError`, `ProcessError`, `CLIJSONDecodeError`, `ClaudeSDKError`, e qualquer outra exceção inesperada) viram `ClaudeAgentProviderError` com mensagem segura — nunca uma exceção crua do SDK escapa para o Orchestrator.
 - `runtime_identity.py` — instruções de persona do JARVIS (ver seção acima).
@@ -179,7 +232,7 @@ Nenhuma ferramenta com efeito no mundo real deve ser executada sem passar pela c
 - **ACTION**: pode exigir confirmação, dependendo do impacto.
 - **DANGEROUS**: sempre exige confirmação explícita do usuário.
 
-**Status: apenas documentado, não implementado em código.** O JARVIS não executa nenhuma ação classificável nessas categorias — não há ferramentas de computador nem MCP habilitados nesta versão (ver "Ferramentas e permissões" acima para o mecanismo específico do Agent SDK).
+**Status: classificação em si apenas documentada; fundação de modelo implementada.** O JARVIS não executa nenhuma ação classificável nessas categorias — não há ferramentas de computador nem MCP habilitados nesta versão (ver "Ferramentas e permissões" acima para o mecanismo específico do Agent SDK). `app/permissions.py` (`PermissionService`, `PermissionRequest`, `RiskLevel`, `PermissionStatus`) já implementa o modelo de dados e o fluxo `request → approve/deny` em memória, com eventos (`permission.requested`/`permission.resolved`) — mas **não está conectado a nenhuma ferramenta real**. Existe só para o futuro HUD conseguir mostrar "JARVIS deseja realizar uma ação — [Permitir] [Negar]" sem exigir redesenho do backend quando ferramentas reais existirem.
 
 ## Integração futura: Ruflo (multiagente)
 
@@ -203,38 +256,41 @@ Ideia futura: o `AIService`/`ClaudeAgentProvider` continua atendendo interaçõe
 
 ## Async: por que e até onde
 
-O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para integrá-lo sem uma ponte sync/async artificial, `JarvisCore.start/stop/handle_input`, `Orchestrator.handle/_handle_message` e `app/terminal.run` também são `async`. `main.py` cria **um único** event loop (`asyncio.run`) para toda a execução — não é recriado por mensagem. O loop de terminal usa `input()` de forma bloqueante entre mensagens; como não há nenhuma outra tarefa concorrente rodando nesta versão, isso não é um problema. Comandos internos (`/help`, `/status`, etc.) continuam síncronos, pois são instantâneos. Este design já comporta, sem reescrita: streaming (iterar `receive_response()` incrementalmente), uma GUI/HUD chamando `JarvisCore` a partir do próprio loop assíncrono dela, e futuras ferramentas assíncronas.
+O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para integrá-lo sem uma ponte sync/async artificial, `JarvisCore.start/stop/handle_input`, `Orchestrator.handle/_handle_message`, `JarvisApplication` (praticamente por inteiro) e `app/terminal.run` também são `async`. `main.py` cria **um único** event loop (`asyncio.run`) para toda a execução — não é recriado por mensagem, nem por requisição cancelada. `JarvisApplication.send_message()` envolve a chamada ao Core em uma `asyncio.Task` própria (`self._current_request_task`) especificamente para permitir cancelamento local (`Task.cancel()`) sem afetar o loop inteiro. O loop de terminal usa `input()` de forma bloqueante entre mensagens; como não há nenhuma outra tarefa concorrente disputando o loop nesta versão, isso não é um problema. Comandos internos (`/help`, `/status`, etc.) continuam síncronos, pois são instantâneos. Este design já comporta, sem reescrita: streaming (iterar `receive_response()` incrementalmente e emitir `response.delta`), uma GUI/HUD chamando `JarvisApplication` a partir do próprio loop assíncrono dela, e futuras ferramentas assíncronas.
 
 ## O que já existe vs. o que é planejamento
 
-**IMPLEMENTADO NO v0.3:**
-- Arquitetura do Claude Agent SDK (`ClaudeAgentProvider`, `services/claude_agent_provider.py`)
-- Lifecycle explícito (`start`/`ask`/`close`), idempotente, com fallback seguro em caso de falha de conexão
-- Preparação para sessão contínua de conversa (mesmo `ClaudeSDKClient` reaproveitado entre mensagens)
-- Integração da memória com o contexto da IA (`MemoryService` → `JarvisCore._build_memory_context` → `AIService.start`)
-- `UnavailableAIService` como fallback padrão sem API key
-- Tratamento de erros oficiais do Agent SDK, convertidos para `ClaudeAgentProviderError` sem vazar segredos
-- Eventos de IA no `EventBus` (`ai.connecting/connected/disconnected`, `ai.request.started/completed/failed`)
-- Integração com estados existentes (`THINKING`, `ERROR`, `IDLE`)
-- 48 testes automatizados, todos offline (mocks/fakes, sem chamada real)
-- Core funcional sem qualquer API key configurada
+**IMPLEMENTADO NO v0.4:**
+- Application Layer (`JarvisApplication`, `app/application.py`) — fronteira estável entre Core e qualquer frontend
+- Modelos de domínio sem dependência do Agent SDK (`app/models.py`): `Message`, `AssistantResponse`, `StatusSnapshot`, `AppEvent`, `PermissionRequest`, etc.
+- Histórico de conversa em runtime (`app/conversation.py`), separado e nunca confundido com `memory/`
+- Stream de eventos para consumidores externos (`subscribe()`/`unsubscribe()`/`events()`), sem WebSocket/servidor
+- Status consolidado com fonte única (`app/status.py`), usado tanto por `/status` quanto por `get_status()`
+- Política de concorrência (uma requisição ativa por conversa, rejeição limpa) e cancelamento (`asyncio.Task.cancel()`)
+- Erros de domínio estruturados para a interface (`AppErrorCode`: `AI_UNAVAILABLE`, `JARVIS_BUSY`, `INTERNAL_ERROR`)
+- "Nova conversa" (`/new`, alias `/reset`): limpa histórico runtime e reinicia a sessão de IA, sem tocar `memory/`
+- Fundação de permissões em memória (`app/permissions.py`), não conectada a ferramentas reais
+- Terminal migrado para consumir `JarvisApplication`, não mais `JarvisCore` diretamente
+- Tudo o que já era v0.3 (Claude Agent SDK, lifecycle, fallback, memória somente-leitura, estados, event bus interno)
+- 91 testes automatizados, todos offline (mocks/fakes, sem chamada real)
+- Core/Application funcionais sem qualquer API key configurada
 
 **PREPARADO, MAS NÃO ATIVADO:**
 - Conexão real com Claude (arquitetura pronta; falta `ANTHROPIC_API_KEY` no ambiente)
 - Sessão real de conversa contínua (testada com fakes; não validada com IA real nesta etapa)
+- Streaming real token-a-token (contrato de eventos já existe; falta só a extensão em `ClaudeAgentProvider.ask()`)
 - Configuração futura de API key (`.env.example` documenta as variáveis; nenhum valor real existe no repositório)
 
 **PLANEJADO:**
-- Aplicativo/HUD gráfico
-- Streaming visual da resposta
+- Aplicativo/HUD gráfico (v0.5) e streaming visual
 - Voz: entrada (STT) e saída (TTS)
-- Permissões interativas (GUI perguntando "Permitir/Negar")
-- Ferramentas de computador e sistema de permissões em código (READ/ACTION/DANGEROUS)
+- Permissões interativas de verdade (GUI perguntando "Permitir/Negar", conectada a ferramentas reais)
+- Ferramentas de computador (READ/ACTION/DANGEROUS conectado à execução)
 - MCP
 - Subagentes especializados
 - Skills em runtime
 - Memória avançada (embeddings, busca semântica, memória de curto/longo prazo)
-- Persistência de sessão entre execuções
+- Persistência de sessão e de conversas entre execuções
 - Ruflo / orquestração multiagente
 
 Qualquer trabalho futuro deve atualizar este documento se a arquitetura real divergir do que está descrito aqui.

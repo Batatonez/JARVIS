@@ -5,7 +5,9 @@ que futuramente entrarão as decisões de quando chamar uma ferramenta, quando
 pedir confirmação, e quando usar subagentes ou Ruflo (ver `docs/architecture.md`).
 `_handle_message` é `async` porque conversar com a IA (`AIService.ask`) é uma
 chamada assíncrona — o Orchestrator não sabe nem precisa saber que, por baixo,
-isso é o Claude Agent SDK.
+isso é o Claude Agent SDK. Retorna o texto cru da resposta — formatação de
+apresentação (ex.: prefixo "JARVIS: ") é responsabilidade de quem exibe o
+texto (`JarvisApplication`/terminal), não do Orchestrator.
 """
 
 import logging
@@ -74,4 +76,4 @@ class Orchestrator:
                     self._core.event_bus.emit("ai.request.completed")
         finally:
             self._core.set_state(JarvisState.IDLE)
-        return f"JARVIS: {reply}"
+        return reply

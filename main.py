@@ -7,6 +7,7 @@ Uso:
 import asyncio
 import sys
 
+from app.application import JarvisApplication
 from app.core import JarvisCore
 from app.terminal import run
 from config.logging_config import configure_logging
@@ -25,8 +26,9 @@ def main() -> None:
     _force_utf8_console()
     configure_logging()
     core = JarvisCore()
+    application = JarvisApplication(core)
     # Um único event loop para toda a execução — não é recriado por mensagem.
-    asyncio.run(run(core))
+    asyncio.run(run(application))
 
 
 if __name__ == "__main__":

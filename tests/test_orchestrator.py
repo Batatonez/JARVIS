@@ -20,7 +20,6 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plain_message_reports_ai_not_connected(self) -> None:
         response = await self.core.handle_input("olá")
-        self.assertTrue(response.startswith("JARVIS:"))
         self.assertIn("não está conectado", response)
 
     async def test_message_does_not_fake_an_ai_reply(self) -> None:
@@ -57,7 +56,7 @@ class OrchestratorAIMessageTests(unittest.IsolatedAsyncioTestCase):
 
         response = await core.handle_input("olá")
 
-        self.assertEqual(response, "JARVIS: Olá, humano.")
+        self.assertEqual(response, "Olá, humano.")
         self.assertEqual(events, ["started", "completed"])
         self.assertEqual(core.state.value, "idle")
 
@@ -74,7 +73,6 @@ class OrchestratorAIMessageTests(unittest.IsolatedAsyncioTestCase):
 
         response = await core.handle_input("olá")
 
-        self.assertTrue(response.startswith("JARVIS:"))
         self.assertIn("erro", response.lower())
         self.assertEqual(events, ["failed"])
         # THINKING -> ERROR -> IDLE

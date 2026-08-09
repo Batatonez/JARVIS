@@ -2,20 +2,34 @@
 API ou processo externo (Claude Agent SDK, Anthropic, ou qualquer outro).
 """
 
+import asyncio
+
 from services.ai_service import AIService
 
 
 class FakeAIService(AIService):
     """AIService genérico e controlável por teste — usado para provar que o
-    Orchestrator/Core lidam com qualquer AIService (não conhecem Claude)."""
+    Orchestrator/Core/Application lidam com qualquer AIService (não conhecem
+    Claude). `delay` simula uma chamada lenta, para testes de concorrência e
+    cancelamento (`await asyncio.sleep(delay)` antes de responder)."""
 
-    def __init__(self, *, available: bool = True, reply: str = "ok", ask_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        reply: str = "ok",
+        ask_error: Exception | None = None,
+        delay: float = 0.0,
+    ):
         self._available = available
         self._reply = reply
         self._ask_error = ask_error
+        self._delay = delay
         self._session_active = False
         self.started = False
         self.closed = False
+        self.start_count = 0
+        self.close_count = 0
         self.received_memory_context: str | None = None
         self.asked_messages: list[str] = []
 
@@ -32,17 +46,21 @@ class FakeAIService(AIService):
 
     async def start(self, *, memory_context: str = "") -> None:
         self.started = True
+        self.start_count += 1
         self.received_memory_context = memory_context
         self._session_active = True
 
     async def ask(self, message: str) -> str:
         self.asked_messages.append(message)
+        if self._delay:
+            await asyncio.sleep(self._delay)
         if self._ask_error:
             raise self._ask_error
         return self._reply
 
     async def close(self) -> None:
         self.closed = True
+        self.close_count += 1
         self._session_active = False
 
 

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from app.application import JarvisApplication
 from app.core import JarvisCore
 from services.ai_service import AIService, UnavailableAIService
 from services.memory_service import MemoryService
@@ -24,3 +25,8 @@ def build_isolated_core(tmp_path: Path, *, ai_service: AIService | None = None) 
         memory_service=memory_service,
         ai_service=ai_service or UnavailableAIService(),
     )
+
+
+def build_isolated_application(tmp_path: Path, *, ai_service: AIService | None = None) -> JarvisApplication:
+    """Cria uma JarvisApplication sobre um JarvisCore isolado (ver `build_isolated_core`)."""
+    return JarvisApplication(build_isolated_core(tmp_path, ai_service=ai_service))

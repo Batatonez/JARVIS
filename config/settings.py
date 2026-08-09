@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "0.3.0"
+    core_version: str = "0.4.0"
 
     project_root: Path = PROJECT_ROOT
     memory_dir: Path = PROJECT_ROOT / "memory"
@@ -26,6 +26,10 @@ class Settings:
     log_path: Path = PROJECT_ROOT / "logs" / "jarvis.log"
 
     dev_mode: bool = os.environ.get("JARVIS_DEV") == "1"
+
+    # Limite de mensagens mantidas no histórico runtime da conversa
+    # (app/conversation.py) — só em RAM, nunca persistido.
+    max_conversation_messages: int = int(os.environ.get("JARVIS_MAX_CONVERSATION_MESSAGES", "200"))
 
     # Provider de IA (Claude Agent SDK, via services/claude_agent_provider.py).
     # Nenhum valor sensível tem default hardcoded — a API key só existe se vier

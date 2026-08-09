@@ -1,8 +1,10 @@
-"""Interface de terminal do JARVIS — a única camada de apresentação desta versão.
+"""Interface de terminal do JARVIS — o primeiro frontend da Application Layer.
 
 Fica fina de propósito: só lê entrada, mostra saída e trata encerramento.
-Toda decisão real acontece em `JarvisCore`/`Orchestrator`, para que uma
-futura interface gráfica (HUD) possa reutilizá-los sem duplicar lógica.
+Toda decisão real acontece em `JarvisApplication` (que por sua vez delega a
+`JarvisCore`/`Orchestrator`) — o terminal não conhece `JarvisCore`,
+`Orchestrator`, serviços internos nem o Claude Agent SDK. Uma futura
+interface gráfica (HUD) deve falar com o mesmo `JarvisApplication`.
 
 `run()` é `async` e roda inteira dentro do único event loop criado por
 `main.py` (`asyncio.run`) — não criamos/destruímos um loop por mensagem.
@@ -13,22 +15,22 @@ tarefa concorrente para atender enquanto espera o usuário digitar, isso não
 
 import logging
 
+from app.application import JarvisApplication
 from app.commands import JarvisExit
-from app.core import JarvisCore
 
 logger = logging.getLogger(__name__)
 
 BANNER = """JARVIS
-Core v0.3
+Core v0.4
 
 Sistema iniciado.
 Digite uma mensagem ou /help.
 """
 
 
-async def run(core: JarvisCore) -> None:
+async def run(application: JarvisApplication) -> None:
     print(BANNER)
-    await core.start()
+    await application.start()
 
     try:
         while True:
@@ -39,7 +41,7 @@ async def run(core: JarvisCore) -> None:
                 break
 
             try:
-                response = await core.handle_input(line)
+                response = await application.handle_input(line)
             except JarvisExit:
                 break
             except Exception:
@@ -52,6 +54,6 @@ async def run(core: JarvisCore) -> None:
                 print(response)
                 print()
     finally:
-        await core.stop()
+        await application.stop()
 
     print("Encerrando JARVIS...")
