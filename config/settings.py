@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "0.1.0"
+    core_version: str = "0.3.0"
 
     project_root: Path = PROJECT_ROOT
     memory_dir: Path = PROJECT_ROOT / "memory"
@@ -27,12 +27,14 @@ class Settings:
 
     dev_mode: bool = os.environ.get("JARVIS_DEV") == "1"
 
-    # Provider de IA (Claude, via services/claude_provider.py). Nenhum valor
-    # sensível tem default hardcoded — a API key só existe se vier do ambiente.
+    # Provider de IA (Claude Agent SDK, via services/claude_agent_provider.py).
+    # Nenhum valor sensível tem default hardcoded — a API key só existe se vier
+    # do ambiente, e nós só checamos a presença dela: quem lê o valor de fato
+    # ao conectar é o próprio Agent SDK (ver services/claude_agent_provider.py).
     anthropic_api_key: str | None = os.environ.get("ANTHROPIC_API_KEY") or None
-    anthropic_model: str = os.environ.get("JARVIS_ANTHROPIC_MODEL", "claude-sonnet-5")
-    anthropic_timeout: float = float(os.environ.get("JARVIS_ANTHROPIC_TIMEOUT", "30"))
-    anthropic_max_tokens: int = int(os.environ.get("JARVIS_ANTHROPIC_MAX_TOKENS", "1024"))
+    # Aceita os aliases documentados pelo Agent SDK ("sonnet"/"opus"/"haiku")
+    # ou um nome de modelo completo — nunca uma versão hardcoded por suposição.
+    agent_model: str = os.environ.get("JARVIS_AGENT_MODEL", "sonnet")
 
     def has_anthropic_api_key(self) -> bool:
         return bool(self.anthropic_api_key)

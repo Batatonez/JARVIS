@@ -2,13 +2,13 @@
 
 Aplicativo/núcleo principal do JARVIS.
 
-## Status: implementado parcialmente (JARVIS Core v0.1)
+## Status: implementado parcialmente (JARVIS Core v0.3)
 
-- **`terminal.py`** — apresentação: loop de input/print no terminal (Ctrl+C, EOF e `/exit` tratados sem traceback). É a única camada de apresentação hoje.
-- **`core.py`** — `JarvisCore`: fachada que conecta configuração, serviços (`services/`) e orquestração; guarda o estado atual e o ciclo de vida (`start`/`stop`).
-- **`orchestrator.py`** — `Orchestrator`: decide se uma entrada é um comando interno ou uma mensagem comum, e roteia para `commands.py` ou para o serviço de IA (ainda indisponível).
-- **`commands.py`** — `CommandRegistry` com os comandos internos: `/help`, `/status`, `/memory`, `/clear`, `/exit` (alias `/quit`).
-- **`state.py`** — `JarvisState`: enum simples do estado atual (`IDLE`, `THINKING`, `WORKING`, etc.).
+- **`terminal.py`** — apresentação: loop `async` de input/print no terminal (Ctrl+C, EOF e `/exit` tratados sem traceback), rodando dentro do único event loop criado por `main.py`. É a única camada de apresentação hoje.
+- **`core.py`** — `JarvisCore`: fachada que conecta configuração, serviços (`services/`) e orquestração; guarda o estado atual e o ciclo de vida assíncrono (`start`/`stop`), incluindo montar o contexto de memória entregue à IA e cair para `UnavailableAIService` se a conexão falhar.
+- **`orchestrator.py`** — `Orchestrator`: decide se uma entrada é um comando interno ou uma mensagem comum, e roteia para `commands.py` ou para o `AIService` (`await ask(...)`). Não conhece Claude Agent SDK.
+- **`commands.py`** — `CommandRegistry` com os comandos internos, síncronos: `/help`, `/status`, `/memory`, `/clear`, `/exit` (alias `/quit`).
+- **`state.py`** — `JarvisState`: enum simples do estado atual (`IDLE`, `THINKING`, `ERROR`, etc.).
 
 ## Responsabilidade futura
 

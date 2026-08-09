@@ -4,6 +4,7 @@ Uso:
     python main.py
 """
 
+import asyncio
 import sys
 
 from app.core import JarvisCore
@@ -24,7 +25,8 @@ def main() -> None:
     _force_utf8_console()
     configure_logging()
     core = JarvisCore()
-    run(core)
+    # Um único event loop para toda a execução — não é recriado por mensagem.
+    asyncio.run(run(core))
 
 
 if __name__ == "__main__":

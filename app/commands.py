@@ -54,6 +54,7 @@ class CommandRegistry:
 
     def _cmd_status(self, args: str) -> str:
         core = self._core
+        ai = core.ai_service
         memory_ok = (
             core.memory_service.is_profile_available()
             or core.memory_service.is_preferences_available()
@@ -64,7 +65,9 @@ class CommandRegistry:
             f"Versão: {core.settings.core_version}\n"
             f"Estado: {core.state.value}\n"
             f"Memória: {'disponível' if memory_ok else 'indisponível'}\n"
-            f"Serviço de IA: {'disponível' if core.ai_service.is_available() else 'indisponível'}"
+            f"IA: {'configurada' if ai.is_available() else 'não configurada'}\n"
+            f"Backend de IA: {ai.backend_name}\n"
+            f"Sessão: {'ativa' if ai.session_active else 'inativa'}"
         )
 
     def _cmd_memory(self, args: str) -> str:

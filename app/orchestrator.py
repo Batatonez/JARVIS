@@ -1,9 +1,11 @@
 """Camada de orquestração: decide o que fazer com cada entrada do usuário.
 
-Nesta v0.1 a decisão é simples (comando interno vs. mensagem comum), mas é
-aqui que futuramente entrarão as decisões de quando consultar memória, quando
-chamar uma ferramenta, quando pedir confirmação, quando gerar eventos para o
-HUD e quando usar subagentes (ver `docs/architecture.md`).
+A decisão hoje é simples (comando interno vs. mensagem comum), mas é aqui
+que futuramente entrarão as decisões de quando chamar uma ferramenta, quando
+pedir confirmação, e quando usar subagentes ou Ruflo (ver `docs/architecture.md`).
+`_handle_message` é `async` porque conversar com a IA (`AIService.ask`) é uma
+chamada assíncrona — o Orchestrator não sabe nem precisa saber que, por baixo,
+isso é o Claude Agent SDK.
 """
 
 import logging
@@ -24,7 +26,7 @@ class Orchestrator:
         self._core = core
         self._commands = CommandRegistry(core)
 
-    def handle(self, text: str) -> str:
+    async def handle(self, text: str) -> str:
         text = text.strip()
         if not text:
             return ""
@@ -34,7 +36,7 @@ class Orchestrator:
         if CommandRegistry.is_command(text):
             response = self._handle_command(text)
         else:
-            response = self._handle_message(text)
+            response = await self._handle_message(text)
 
         self._core.event_bus.emit("message.responded", text=response)
         return response
@@ -48,7 +50,7 @@ class Orchestrator:
         self._core.event_bus.emit("command.executed", text=text)
         return response
 
-    def _handle_message(self, text: str) -> str:
+    async def _handle_message(self, text: str) -> str:
         self._core.set_state(JarvisState.THINKING)
         try:
             if not self._core.ai_service.is_available():
@@ -57,14 +59,19 @@ class Orchestrator:
                     "Digite /help para ver os comandos disponíveis."
                 )
             else:
+                self._core.event_bus.emit("ai.request.started", text=text)
                 try:
-                    reply = self._core.ai_service.ask(text)
+                    reply = await self._core.ai_service.ask(text)
                 except AIServiceUnavailableError as exc:
                     # Cobre tanto o placeholder quanto falhas em runtime de um
-                    # provider real (ex.: erro de rede/API do ClaudeProvider).
-                    # A mensagem já vem segura (sem segredos) do próprio serviço.
+                    # provider real (ex.: erro do ClaudeAgentProvider). A
+                    # mensagem já vem segura (sem segredos) do próprio serviço.
                     logger.warning("Falha ao obter resposta de IA: %s", exc)
+                    self._core.set_state(JarvisState.ERROR)
+                    self._core.event_bus.emit("ai.request.failed", error=str(exc))
                     reply = str(exc)
+                else:
+                    self._core.event_bus.emit("ai.request.completed")
         finally:
             self._core.set_state(JarvisState.IDLE)
         return f"JARVIS: {reply}"
