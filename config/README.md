@@ -1,13 +1,14 @@
 # config/
 
-Reservado para configurações do JARVIS (não confundir com `.claude/`, que é configuração específica do Claude Code).
+Configurações do JARVIS.
 
-## Status
+## Status: implementado (básico, JARVIS Core v0.1)
 
-Ainda não implementado.
+- **`settings.py`** — `Settings`: nome do app, versão do Core, e caminhos importantes (memória, logs), todos derivados de `PROJECT_ROOT` (calculado a partir da localização do próprio arquivo) — nada é hardcoded para uma máquina específica.
+- **`logging_config.py`** — configura logging da biblioteca padrão: console mostra apenas avisos/erros, arquivo (`logs/jarvis.log`, ignorado pelo Git) registra tudo em nível INFO+ para desenvolvimento.
 
 ## Regras
 
 - **Nunca** armazenar segredos (senhas, tokens, API keys) diretamente neste repositório.
 - Quando integrações e APIs forem adicionadas futuramente, usar variáveis de ambiente (arquivo `.env`, já coberto pelo `.gitignore`) ou outro mecanismo apropriado de gerenciamento de segredos — nunca hardcoded em arquivos versionados.
-- Configurações não sensíveis (ex.: preferências de comportamento padrão, flags de funcionalidades) podem ficar aqui em formato simples (ex.: `.json`, `.yaml`, `.toml`) quando essa necessidade surgir.
+- Nenhuma informação sensível deve ser registrada em log.

@@ -13,6 +13,7 @@ Memória persistente sobre o usuário (Davi) — o que o JARVIS "sabe" entre con
 - Não salvar informação automaticamente — apenas o que tiver utilidade futura clara.
 - Atualizar entradas existentes em vez de duplicá-las.
 - Nada aqui deve conter senhas, tokens ou credenciais.
+- Metadados técnicos (git config, usuário do Windows, paths, variáveis de ambiente, etc.) não viram memória pessoal automaticamente — ver regra em [`CLAUDE.md`](../CLAUDE.md), seção "Memória".
 
 ## Evolução futura (não implementada nesta etapa)
 

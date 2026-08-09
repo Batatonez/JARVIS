@@ -5,8 +5,8 @@ Informações relativamente estáveis sobre o usuário. Preencher aos poucos, co
 ## Identidade
 
 - **Nome:**
-- **E-mail:** davicunzolo@gmail.com
-- **Localização / fuso horário:** Brasil; fuso horário UTC-3 (horário de Brasília).
+- **E-mail:**
+- **Localização / fuso horário:**
 - **Idiomas:** português do Brasil (principal); bastante contato com inglês através de vídeos, músicas, filmes, jogos e tecnologia.
 
 ## Papéis e ocupação

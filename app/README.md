@@ -1,18 +1,19 @@
 # app/
 
-Responsável pela aplicação principal e pela interface do JARVIS (chat, HUD, entrada/saída de voz).
+Aplicativo/núcleo principal do JARVIS.
 
-## Status
+## Status: implementado parcialmente (JARVIS Core v0.1)
 
-Ainda não implementado. Nenhuma tecnologia de interface foi escolhida.
+- **`terminal.py`** — apresentação: loop de input/print no terminal (Ctrl+C, EOF e `/exit` tratados sem traceback). É a única camada de apresentação hoje.
+- **`core.py`** — `JarvisCore`: fachada que conecta configuração, serviços (`services/`) e orquestração; guarda o estado atual e o ciclo de vida (`start`/`stop`).
+- **`orchestrator.py`** — `Orchestrator`: decide se uma entrada é um comando interno ou uma mensagem comum, e roteia para `commands.py` ou para o serviço de IA (ainda indisponível).
+- **`commands.py`** — `CommandRegistry` com os comandos internos: `/help`, `/status`, `/memory`, `/clear`, `/exit` (alias `/quit`).
+- **`state.py`** — `JarvisState`: enum simples do estado atual (`IDLE`, `THINKING`, `WORKING`, etc.).
 
 ## Responsabilidade futura
 
-- Renderizar a interface com que o usuário interage (chat de texto, HUD visual).
-- Capturar entrada de voz e texto do usuário e repassar ao orquestrador (`services/`).
-- Exibir respostas em texto e reproduzir respostas em voz.
-- Não deve conter lógica de negócio, memória ou orquestração — isso pertence a `services/`. O `app/` é a camada de apresentação.
+Quando uma interface gráfica (HUD) for criada, ela deve reutilizar `JarvisCore` e `Orchestrator` sem duplicar lógica — apenas somar ou substituir `terminal.py` por uma camada de apresentação gráfica. Entrada de voz e captura de tela/HUD visual ainda não existem.
 
-## Decisões em aberto (não decidir prematuramente)
+## Fora de escopo aqui
 
-- Framework de interface (ex.: Electron, Tauri, PySide, web) — a ser avaliado quando a etapa de interface começar, com base nos requisitos reais do HUD e não antes.
+Nenhuma tecnologia de interface gráfica foi escolhida ainda (Electron, Tauri, PySide, web etc.) — isso será decidido quando a etapa de interface gráfica começar, não antes.

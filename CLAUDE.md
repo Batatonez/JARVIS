@@ -7,7 +7,7 @@ Este arquivo orienta o Claude Code (e qualquer agente derivado) sempre que estiv
 - O projeto se chama **JARVIS**.
 - É um **assistente pessoal modular para Windows**, pertencente a Davi.
 - O **Claude Code é o principal agente de desenvolvimento** deste projeto e, futuramente, também fará parte do funcionamento em tempo real do sistema (como "cérebro" do assistente).
-- O projeto está atualmente em fase de **fundação**. Muitas pastas existem apenas como estrutura documentada para crescimento futuro — isso é intencional, não um esquecimento.
+- O projeto está atualmente no **JARVIS Core v0.1**: um núcleo executável por terminal, sem IA conectada. Muitas pastas ainda existem apenas como estrutura documentada para crescimento futuro — isso é intencional, não um esquecimento.
 
 ## Organização
 
@@ -43,6 +43,8 @@ A pasta [`memory/`](memory/) contém a memória persistente sobre o usuário.
 - [`memory/profile.md`](memory/profile.md): informações relativamente estáveis sobre o usuário (quem é, contexto geral).
 - [`memory/preferences.md`](memory/preferences.md): preferências relevantes para o funcionamento do JARVIS (estilo de resposta, ferramentas preferidas, etc).
 
+**Metadados técnicos não são memória pessoal.** Informações obtidas de fontes técnicas/ambientais — configuração do Git, nome de usuário do Windows, caminhos de arquivos, variáveis de ambiente, terminal, metadados de sistema, contas conectadas, nome da máquina, dados da sessão atual — podem ser usadas tecnicamente quando necessário (ex.: resolver um caminho), mas **nunca** devem virar memória persistente sobre o usuário em `memory/` sem uma razão clara ou sem o usuário fornecer/autorizar isso explicitamente. Um e-mail de configuração do Git, por exemplo, não deve ser salvo como e-mail do usuário só porque está tecnicamente disponível.
+
 ## Projetos
 
 A pasta [`projects/`](projects/) contém contexto persistente sobre projetos acompanhados pelo JARVIS (não confundir com o próprio projeto JARVIS).
@@ -63,4 +65,4 @@ Mudanças importantes de arquitetura devem ser refletidas em [`docs/architecture
 
 ## Estado atual do projeto
 
-O JARVIS está na etapa de **fundação**: estrutura de pastas, documentação e memória em Markdown. Nenhuma dependência foi instalada, nenhum framework de interface foi escolhido, e nenhuma funcionalidade de voz, automação, MCP ou integração externa foi implementada ainda. Ao trabalhar em tarefas futuras, não presuma que essas camadas já existem — verifique o estado real antes de assumir.
+O JARVIS está no **JARVIS Core v0.1**: um núcleo executável por terminal (`python main.py`), com orquestração básica, comandos internos, leitura somente-leitura de memória e um event bus interno — tudo usando apenas a biblioteca padrão do Python. Nenhuma dependência externa foi instalada, nenhum framework de interface gráfica foi escolhido, e nenhuma IA, voz, automação, MCP ou integração externa foi implementada ainda. Ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo de implementado vs. planejado. Ao trabalhar em tarefas futuras, não presuma que uma camada existe só porque está no diagrama de arquitetura — verifique o estado real do código antes de assumir.
