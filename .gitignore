@@ -1,0 +1,69 @@
+# --- Segredos e ambiente ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Testes / cobertura ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# --- Node (futuro app/HUD) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Logs e arquivos temporários ---
+*.log
+logs/
+*.tmp
+*.temp
+tmp/
+temp/
+
+# --- Bancos de dados locais (futuro) ---
+*.sqlite3
+*.db
+
+# --- IDE / editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Claude Code (config local, não compartilhada) ---
+.claude/settings.local.json
+
+# --- Build / artefatos ---
+*.exe
+*.msi
+out/
