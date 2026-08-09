@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from services.ai_service import AIService, AIServiceUnavailableError
 from tests.helpers import build_isolated_core
 
 
@@ -33,6 +34,36 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(self.core.state.value, "idle")
 
         self.core.handle_input("/status")
+        self.assertEqual(self.core.state.value, "idle")
+
+
+class _FailingAIService(AIService):
+    """Fake genérico (não é o ClaudeProvider) usado só para provar que o
+    Orchestrator lida com qualquer AIService que falhe em runtime, sem
+    conhecer nada sobre Claude ou a SDK da Anthropic."""
+
+    def is_available(self) -> bool:
+        return True
+
+    def ask(self, message: str) -> str:
+        raise AIServiceUnavailableError("O serviço de inteligência retornou um erro.")
+
+
+class OrchestratorAIFailureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.core = build_isolated_core(Path(self._tmp.name), ai_service=_FailingAIService())
+
+    def test_runtime_ai_failure_returns_friendly_message_without_crashing(self) -> None:
+        response = self.core.handle_input("olá")
+
+        self.assertTrue(response.startswith("JARVIS:"))
+        self.assertIn("erro", response.lower())
+
+    def test_state_returns_to_idle_after_ai_failure(self) -> None:
+        self.core.handle_input("olá")
+
         self.assertEqual(self.core.state.value, "idle")
 
 

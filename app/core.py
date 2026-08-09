@@ -16,7 +16,7 @@ from app.orchestrator import Orchestrator
 from app.state import JarvisState
 from config.settings import Settings
 from config.settings import settings as default_settings
-from services.ai_service import AIService, UnavailableAIService
+from services.ai_service import AIService, create_ai_service
 from services.event_bus import EventBus
 from services.memory_service import MemoryService
 
@@ -37,7 +37,7 @@ class JarvisCore:
         self.memory_service = memory_service or MemoryService(
             self.settings.profile_path, self.settings.preferences_path
         )
-        self.ai_service = ai_service or UnavailableAIService()
+        self.ai_service = ai_service or create_ai_service(self.settings)
         self.state = JarvisState.IDLE
         self.orchestrator = Orchestrator(self)
 

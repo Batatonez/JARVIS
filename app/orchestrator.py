@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from app.commands import CommandRegistry
 from app.state import JarvisState
+from services.ai_service import AIServiceUnavailableError
 
 if TYPE_CHECKING:
     from app.core import JarvisCore
@@ -56,7 +57,14 @@ class Orchestrator:
                     "Digite /help para ver os comandos disponíveis."
                 )
             else:
-                reply = self._core.ai_service.ask(text)
+                try:
+                    reply = self._core.ai_service.ask(text)
+                except AIServiceUnavailableError as exc:
+                    # Cobre tanto o placeholder quanto falhas em runtime de um
+                    # provider real (ex.: erro de rede/API do ClaudeProvider).
+                    # A mensagem já vem segura (sem segredos) do próprio serviço.
+                    logger.warning("Falha ao obter resposta de IA: %s", exc)
+                    reply = str(exc)
         finally:
             self._core.set_state(JarvisState.IDLE)
         return f"JARVIS: {reply}"

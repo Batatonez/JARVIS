@@ -1,0 +1,3 @@
+# SDK oficial da Anthropic — único dependência externa do JARVIS Core v0.2,
+# usada por services/claude_provider.py para conectar o ClaudeProvider.
+anthropic>=0.121.0,<1.0.0

@@ -7,7 +7,7 @@ Este arquivo orienta o Claude Code (e qualquer agente derivado) sempre que estiv
 - O projeto se chama **JARVIS**.
 - É um **assistente pessoal modular para Windows**, pertencente a Davi.
 - O **Claude Code é o principal agente de desenvolvimento** deste projeto e, futuramente, também fará parte do funcionamento em tempo real do sistema (como "cérebro" do assistente).
-- O projeto está atualmente no **JARVIS Core v0.1**: um núcleo executável por terminal, sem IA conectada. Muitas pastas ainda existem apenas como estrutura documentada para crescimento futuro — isso é intencional, não um esquecimento.
+- O projeto está atualmente no **JARVIS Core v0.2**: um núcleo executável por terminal, com IA real (Claude) conectável via `ANTHROPIC_API_KEY`. Muitas pastas ainda existem apenas como estrutura documentada para crescimento futuro — isso é intencional, não um esquecimento.
 
 ## Organização
 
@@ -65,4 +65,4 @@ Mudanças importantes de arquitetura devem ser refletidas em [`docs/architecture
 
 ## Estado atual do projeto
 
-O JARVIS está no **JARVIS Core v0.1**: um núcleo executável por terminal (`python main.py`), com orquestração básica, comandos internos, leitura somente-leitura de memória e um event bus interno — tudo usando apenas a biblioteca padrão do Python. Nenhuma dependência externa foi instalada, nenhum framework de interface gráfica foi escolhido, e nenhuma IA, voz, automação, MCP ou integração externa foi implementada ainda. Ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo de implementado vs. planejado. Ao trabalhar em tarefas futuras, não presuma que uma camada existe só porque está no diagrama de arquitetura — verifique o estado real do código antes de assumir.
+O JARVIS está no **JARVIS Core v0.2**: um núcleo executável por terminal (`python main.py`), com orquestração básica, comandos internos, leitura somente-leitura de memória, um event bus interno e IA real conectável via `ClaudeProvider` (`services/claude_provider.py`, SDK oficial `anthropic` — única dependência externa do projeto). Sem `ANTHROPIC_API_KEY` configurada, o sistema cai automaticamente para o placeholder `UnavailableAIService`, sem erro. Nenhum framework de interface gráfica foi escolhido, e nenhuma voz, automação, MCP, memória conversacional ou integração externa foi implementada ainda. Ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo de implementado vs. planejado. Ao trabalhar em tarefas futuras, não presuma que uma camada existe só porque está no diagrama de arquitetura — verifique o estado real do código antes de assumir.
