@@ -5,8 +5,8 @@ Informações relativamente estáveis sobre o usuário. Preencher aos poucos, co
 ## Identidade
 
 - **Nome:**
-- **E-mail:**
-- **Localização / fuso horário:**
+- **E-mail:** davicunzolo@gmail.com
+- **Localização / fuso horário:** provavelmente UTC-3 (horário de Brasília) — inferido do timestamp dos commits e do idioma; não confirmado diretamente pelo usuário.
 
 ## Papéis e ocupação
 
