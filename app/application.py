@@ -212,6 +212,24 @@ class JarvisApplication:
         self._emit("conversation.started")
         logger.info("Nova conversa iniciada.")
 
+    async def load_conversation_history(self, messages: list[Message]) -> None:
+        """Substitui o histórico visível por mensagens já persistidas (v0.9
+        — abrir uma conversa antiga pela sidebar). Cancela qualquer
+        requisição em andamento antes de trocar o histórico, mas **não**
+        reinicia a sessão de IA como `new_conversation()` faz — carregar uma
+        conversa antiga é só trocar o que aparece na tela.
+
+        IMPORTANTE (documentado com destaque porque é fácil de presumir
+        errado): isto restaura o HISTÓRICO VISUAL, não a sessão real do
+        Claude Agent SDK — que nesta versão nem existe (sem API key). Se/quando
+        o Claude real estiver ativo, ele não vai "lembrar" automaticamente
+        deste histórico só porque ele reapareceu na tela; reconectar contexto
+        de uma conversa antiga a uma sessão real do Agent SDK é trabalho de
+        uma versão futura (ver docs/architecture.md, seção Contas e Chats)."""
+        await self.cancel_current_request()
+        self._conversation.load(messages)
+        self._emit("conversation.loaded")
+
     # ------------------------------------------------------------------
     # Voz (v0.7 — push-to-talk + fala; ver docs/architecture.md)
     #

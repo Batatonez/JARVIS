@@ -18,7 +18,7 @@ import logging
 
 from app.models import TranscriptionResult
 from services.event_bus import EventBus
-from services.stt_service import SpeechToTextService, STTUnavailableError, create_stt_service
+from services.stt_service import SpeechToTextService, STTStatus, STTUnavailableError, create_stt_service
 from services.tts_service import TextToSpeechService, TTSUnavailableError, create_tts_service
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,13 @@ class VoiceService:
     @property
     def stt_ready(self) -> bool:
         return self.stt.is_available()
+
+    @property
+    def stt_status(self) -> STTStatus:
+        """Diagnóstico real (`STTStatus`) para o HUD decidir entre mostrar
+        `SETUP_REQUIRED` (oferecer instalar o modelo), `NO_MICROPHONE`,
+        `READY` ou `UNAVAILABLE` — nunca um "indisponível" genérico."""
+        return self.stt.status
 
     @property
     def tts_ready(self) -> bool:

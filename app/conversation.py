@@ -30,3 +30,12 @@ class Conversation:
 
     def clear(self) -> None:
         self._messages.clear()
+
+    def load(self, messages: list[Message]) -> None:
+        """Substitui o histórico em RAM por mensagens já existentes — usado
+        ao abrir uma conversa antiga (v0.9, ver `app/account_manager.py`).
+        Isto é só a VISÃO da conversa; não recria nem restaura a sessão real
+        do Claude Agent SDK (que nem existe nesta versão — sem API key). O
+        histórico visual persistido e a sessão de IA são coisas diferentes,
+        documentado em `docs/architecture.md`."""
+        self._messages = list(messages[-self._max_messages :])

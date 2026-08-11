@@ -1,9 +1,11 @@
 """Testes do JarvisBridge — offline, sem chamada real de IA.
 
-Usa `JarvisApplication` real por cima de `FakeAIService` (mesmos fakes da
-Application Layer), exercitando o caminho de verdade: evento interno ->
-`JarvisApplication.events()` -> `Bridge._consume_events()` -> Properties Qt.
-Não abre janela nem carrega QML (isso é `test_qml_smoke.py`).
+v0.9: o Bridge é auth-first (ver frontend/bridge.py) — `self._app` só existe
+depois de um login/registro bem-sucedido via `AccountManager`. Os testes
+sempre chamam `bridge.initialize()` (tenta auto-login, não encontra sessão)
+seguido de `bridge._register(...)`/`bridge._login(...)` (as corrotinas por
+trás dos slots públicos) antes de exercitar qualquer coisa que dependa de
+`bridge._app`.
 
 Usa `QGuiApplication`, não `QCoreApplication`: como o singleton do Qt é
 compartilhado por todo o processo de teste, se este módulo criasse um
@@ -23,11 +25,11 @@ from pathlib import Path
 from PySide6.QtGui import QGuiApplication
 
 from app.models import AppEvent, PermissionStatus, RiskLevel
-from frontend.bridge import JarvisBridge
 from frontend.message_model import MessageRoles
+from services.user_repository import InvalidCredentialsError, UsernameAlreadyExistsError
 from services.voice_service import VoiceService
 from tests.fakes import FakeAIService, FakeSTTService, FakeTTSService
-from tests.helpers import build_isolated_application, build_isolated_core
+from tests.helpers import build_isolated_bridge, build_isolated_core, build_isolated_voice_service
 
 
 def _ensure_qt_app() -> QGuiApplication:
@@ -41,36 +43,51 @@ async def _settle() -> None:
         await asyncio.sleep(0)
 
 
-class BridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+class _BridgeTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         _ensure_qt_app()
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmp.cleanup)
+        self.tmp_path = Path(self._tmp.name)
 
-    def _bridge(self, ai_service=None, dev_mode: bool = False) -> JarvisBridge:
-        application = build_isolated_application(Path(self._tmp.name), ai_service=ai_service)
-        return JarvisBridge(application, dev_mode=dev_mode)
+    def _bridge(self, *, ai_service=None, voice_service_factory=None, dev_mode: bool = False):
+        ai_service_factory = (lambda: ai_service) if ai_service is not None else None
+        return build_isolated_bridge(
+            self.tmp_path,
+            dev_mode=dev_mode,
+            ai_service_factory=ai_service_factory,
+            voice_service_factory=voice_service_factory or build_isolated_voice_service,
+        )
 
-    def test_dev_mode_defaults_to_false(self) -> None:
-        application = build_isolated_application(Path(self._tmp.name))
-        bridge = JarvisBridge(application)
+    async def _bridge_with_session(self, *, ai_service=None, voice_service_factory=None, dev_mode: bool = False):
+        bridge = self._bridge(ai_service=ai_service, voice_service_factory=voice_service_factory, dev_mode=dev_mode)
+        await bridge.initialize()
+        await bridge._register("alice", "Alice", "senha-forte-123")
+        return bridge
 
+
+class BridgeLifecycleTests(_BridgeTestCase):
+    async def test_dev_mode_defaults_to_false(self) -> None:
+        bridge = self._bridge()
         self.assertFalse(bridge.devMode)
 
-    def test_initial_properties_before_start(self) -> None:
+    async def test_initial_properties_before_login(self) -> None:
         bridge = self._bridge()
+        await bridge.initialize()  # sem sessão local -> permanece deslogado
 
+        self.assertFalse(bridge.authenticated)
+        self.assertIsNone(bridge.currentUser)
         self.assertEqual(bridge.jarvisState, "idle")
         self.assertFalse(bridge.running)
         self.assertFalse(bridge.busy)
         self.assertIsNone(bridge.pendingPermission)
         self.assertEqual(bridge.messages.rowCount(), 0)
 
-    async def test_start_marks_running_and_reflects_ai_status(self) -> None:
-        bridge = self._bridge()
-
-        await bridge.start()
+    async def test_register_authenticates_and_reflects_ai_status(self) -> None:
+        bridge = await self._bridge_with_session()
         try:
+            self.assertTrue(bridge.authenticated)
+            self.assertEqual(bridge.currentUser["username"], "alice")
             self.assertTrue(bridge.running)
             self.assertFalse(bridge.aiConfigured)
             self.assertEqual(bridge.aiBackend, "nenhum")
@@ -78,11 +95,9 @@ class BridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await bridge._shutdown()
 
-    async def test_start_with_available_ai_reflects_backend(self) -> None:
+    async def test_register_with_available_ai_reflects_backend(self) -> None:
         fake_ai = FakeAIService(available=True, reply="ok")
-        bridge = self._bridge(ai_service=fake_ai)
-
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             self.assertTrue(bridge.aiConfigured)
             self.assertEqual(bridge.aiBackend, "Fake")
@@ -91,8 +106,7 @@ class BridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_shutdown_is_clean_and_marks_can_close(self) -> None:
-        bridge = self._bridge()
-        await bridge.start()
+        bridge = await self._bridge_with_session()
 
         await bridge._shutdown()
 
@@ -101,20 +115,88 @@ class BridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bridge._event_task is None or bridge._event_task.done())
 
 
-class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        _ensure_qt_app()
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+class BridgeAccountTests(_BridgeTestCase):
+    """Slots/sinais de conta (v0.9) — o resto dos cenários de auth (hashing,
+    isolamento, expiração de sessão etc.) já é coberto em
+    `test_account_manager_auth.py` diretamente sobre o `AccountManager`."""
 
-    def _bridge(self, ai_service=None) -> JarvisBridge:
-        application = build_isolated_application(Path(self._tmp.name), ai_service=ai_service)
-        return JarvisBridge(application, dev_mode=True)
+    async def test_register_via_public_slot_authenticates(self) -> None:
+        bridge = self._bridge()
+        await bridge.initialize()
+        try:
+            bridge.register("alice", "Alice", "senha-forte-123")
+            for _ in range(30):
+                if bridge.authenticated:
+                    break
+                await asyncio.sleep(0.005)
 
+            self.assertTrue(bridge.authenticated)
+            self.assertEqual(bridge.currentUser["username"], "alice")
+        finally:
+            await bridge._shutdown()
+
+    async def test_register_duplicate_username_emits_auth_error(self) -> None:
+        bridge = self._bridge()
+        await bridge.initialize()
+        try:
+            await bridge._register("alice", "Alice", "senha-forte-123")
+
+            received: list[str] = []
+            bridge.authErrorRaised.connect(lambda message: received.append(message))
+
+            with self.assertRaises(UsernameAlreadyExistsError):
+                await bridge._register("alice", "Outra Alice", "outra-senha-456")
+        finally:
+            await bridge._shutdown()
+
+    async def test_login_wrong_password_emits_auth_error_via_public_slot(self) -> None:
+        bridge = self._bridge()
+        await bridge.initialize()
+        try:
+            await bridge._register("alice", "Alice", "senha-forte-123")
+            await bridge._leave_session()
+            await bridge._account.logout()
+            self.assertFalse(bridge.authenticated)
+
+            received: list[str] = []
+            bridge.authErrorRaised.connect(lambda message: received.append(message))
+
+            bridge.login("alice", "senha-errada")
+            for _ in range(30):
+                if received:
+                    break
+                await asyncio.sleep(0.005)
+
+            self.assertEqual(len(received), 1)
+            self.assertFalse(bridge.authenticated)
+        finally:
+            await bridge._shutdown()
+
+    async def test_logout_clears_authentication_and_messages(self) -> None:
+        bridge = await self._bridge_with_session(ai_service=FakeAIService(available=True, reply="ok"))
+        try:
+            await bridge._app.send_message("oi")
+            await _settle()
+            self.assertGreater(bridge.messages.rowCount(), 0)
+
+            bridge.logout()
+            for _ in range(30):
+                if not bridge.authenticated:
+                    break
+                await asyncio.sleep(0.005)
+
+            self.assertFalse(bridge.authenticated)
+            self.assertIsNone(bridge.currentUser)
+            self.assertEqual(bridge.messages.rowCount(), 0)
+            self.assertEqual(bridge.conversations, [])
+        finally:
+            await bridge._shutdown()
+
+
+class BridgeEventFlowTests(_BridgeTestCase):
     async def test_state_changed_flows_from_backend_to_property(self) -> None:
         fake_ai = FakeAIService(available=True, reply="ok", delay=0.02)
-        bridge = self._bridge(ai_service=fake_ai)
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             observed_states = []
             bridge.stateChanged.connect(lambda: observed_states.append(bridge.jarvisState))
@@ -135,8 +217,7 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_message_slot_updates_history(self) -> None:
         fake_ai = FakeAIService(available=True, reply="Olá, humano.")
-        bridge = self._bridge(ai_service=fake_ai)
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             bridge.sendMessage("oi, tudo bem?")
             for _ in range(30):
@@ -151,8 +232,7 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_busy_rejection_emits_signal_without_touching_history(self) -> None:
         fake_ai = FakeAIService(available=True, reply="resposta A", delay=0.05)
-        bridge = self._bridge(ai_service=fake_ai)
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             received = []
             bridge.busyRejected.connect(lambda message: received.append(message))
@@ -170,8 +250,7 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_current_request_returns_state_to_idle(self) -> None:
         fake_ai = FakeAIService(available=True, delay=5.0)
-        bridge = self._bridge(ai_service=fake_ai)
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             task = asyncio.ensure_future(bridge._app.send_message("mensagem lenta"))
             await asyncio.sleep(0.01)
@@ -189,16 +268,15 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await bridge._shutdown()
 
-    async def test_new_conversation_clears_message_model(self) -> None:
+    async def test_start_new_conversation_clears_message_model(self) -> None:
         fake_ai = FakeAIService(available=True, reply="ok")
-        bridge = self._bridge(ai_service=fake_ai)
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             await bridge._app.send_message("mensagem antiga")
             await _settle()
             self.assertGreater(bridge.messages.rowCount(), 0)
 
-            bridge.newConversation()
+            bridge.startNewConversation()
             for _ in range(30):
                 if bridge.messages.rowCount() == 0:
                     break
@@ -209,8 +287,7 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_permission_requested_and_resolved_flow(self) -> None:
-        bridge = self._bridge()
-        await bridge.start()
+        bridge = await self._bridge_with_session()
         try:
             request = bridge._app.permissions.request(
                 "restart_server", "Reiniciar o servidor", RiskLevel.DANGEROUS
@@ -230,8 +307,7 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_deny_permission_resolves_as_denied(self) -> None:
-        bridge = self._bridge()
-        await bridge.start()
+        bridge = await self._bridge_with_session()
         try:
             request = bridge._app.permissions.request(
                 "read_file", "Ler um arquivo", RiskLevel.READ
@@ -247,16 +323,9 @@ class BridgeEventFlowTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
 
-class BridgeDevModeTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        _ensure_qt_app()
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-
+class BridgeDevModeTests(_BridgeTestCase):
     async def test_simulate_state_is_noop_outside_dev_mode(self) -> None:
-        application = build_isolated_application(Path(self._tmp.name))
-        bridge = JarvisBridge(application, dev_mode=False)
-        await bridge.start()
+        bridge = await self._bridge_with_session(dev_mode=False)
         try:
             bridge.simulateState("error")
             self.assertEqual(bridge.jarvisState, "idle")
@@ -264,9 +333,7 @@ class BridgeDevModeTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_simulate_state_works_in_dev_mode(self) -> None:
-        application = build_isolated_application(Path(self._tmp.name))
-        bridge = JarvisBridge(application, dev_mode=True)
-        await bridge.start()
+        bridge = await self._bridge_with_session(dev_mode=True)
         try:
             bridge.simulateState("error")
             self.assertEqual(bridge.jarvisState, "error")
@@ -278,9 +345,7 @@ class BridgeDevModeTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_simulate_state_supports_processing_speech(self) -> None:
-        application = build_isolated_application(Path(self._tmp.name))
-        bridge = JarvisBridge(application, dev_mode=True)
-        await bridge.start()
+        bridge = await self._bridge_with_session(dev_mode=True)
         try:
             bridge.simulateState("processing_speech")
             self.assertEqual(bridge.jarvisState, "processing_speech")
@@ -288,42 +353,44 @@ class BridgeDevModeTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
 
-class BridgeVoiceTests(unittest.IsolatedAsyncioTestCase):
+class BridgeVoiceTests(_BridgeTestCase):
     """Fluxo de voz pelos slots/properties reais do Bridge — nunca toca
     microfone/TTS real (FakeSTTService/FakeTTSService)."""
 
-    def setUp(self) -> None:
-        _ensure_qt_app()
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+    async def _bridge_with_voice(self, *, stt=None, tts=None, dev_mode: bool = False):
+        def _voice_factory(core):
+            return VoiceService(
+                core.settings,
+                core.event_bus,
+                stt=stt if stt is not None else FakeSTTService(),
+                tts=tts if tts is not None else FakeTTSService(),
+            )
 
-    def _bridge(self, *, stt=None, tts=None, dev_mode: bool = False) -> JarvisBridge:
-        core = build_isolated_core(Path(self._tmp.name))
-        voice = VoiceService(
-            core.settings,
-            core.event_bus,
-            stt=stt if stt is not None else FakeSTTService(),
-            tts=tts if tts is not None else FakeTTSService(),
-        )
-        from app.application import JarvisApplication
-
-        application = JarvisApplication(core, voice_service=voice)
-        return JarvisBridge(application, dev_mode=dev_mode)
+        bridge = self._bridge(voice_service_factory=_voice_factory, dev_mode=dev_mode)
+        await bridge.initialize()
+        await bridge._register("alice", "Alice", "senha-forte-123")
+        return bridge
 
     async def test_microphone_available_and_stt_ready_reflect_status(self) -> None:
-        bridge = self._bridge(stt=FakeSTTService(available=True, microphone=False))
-        await bridge.start()
+        bridge = await self._bridge_with_voice(stt=FakeSTTService(available=True, microphone=False))
         try:
             self.assertTrue(bridge.sttReady)
             self.assertFalse(bridge.microphoneAvailable)
             self.assertFalse(bridge.voiceAvailable)
+            self.assertEqual(bridge.sttStatus, "no_microphone")
+        finally:
+            await bridge._shutdown()
+
+    async def test_setup_required_status_is_reflected(self) -> None:
+        bridge = await self._bridge_with_voice(stt=FakeSTTService(available=False))
+        try:
+            self.assertEqual(bridge.sttStatus, "setup_required")
         finally:
             await bridge._shutdown()
 
     async def test_toggle_listening_round_trip_via_real_slots(self) -> None:
         stt = FakeSTTService(transcript="ligar as luzes")
-        bridge = self._bridge(stt=stt)
-        await bridge.start()
+        bridge = await self._bridge_with_voice(stt=stt)
         try:
             received: list[str] = []
             bridge.transcriptionReady.connect(lambda text: received.append(text))
@@ -348,8 +415,7 @@ class BridgeVoiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_speaking_slot_interrupts_real_flow(self) -> None:
         tts = FakeTTSService(delay=5.0)
-        bridge = self._bridge(tts=tts)
-        await bridge.start()
+        bridge = await self._bridge_with_voice(tts=tts)
         try:
             asyncio.ensure_future(bridge._app.speak("frase longa"))
             for _ in range(30):
@@ -370,21 +436,15 @@ class BridgeVoiceTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
 
-class BridgeStreamingPrepTests(unittest.IsolatedAsyncioTestCase):
+class BridgeStreamingPrepTests(_BridgeTestCase):
     """`response.delta` não existe no backend real ainda (sem Claude
     conectado) — estes testes simulam o evento diretamente para confirmar
     que o Bridge/MessageListModel já sabem reagir quando ele existir de
     verdade (v0.8: preparação, não streaming implementado)."""
 
-    def setUp(self) -> None:
-        _ensure_qt_app()
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-
     async def test_response_delta_updates_existing_message_progressively(self) -> None:
         fake_ai = FakeAIService(available=True, reply="resposta inicial")
-        bridge = JarvisBridge(build_isolated_application(Path(self._tmp.name), ai_service=fake_ai))
-        await bridge.start()
+        bridge = await self._bridge_with_session(ai_service=fake_ai)
         try:
             await bridge._app.send_message("oi")
             await _settle()
@@ -406,8 +466,7 @@ class BridgeStreamingPrepTests(unittest.IsolatedAsyncioTestCase):
             await bridge._shutdown()
 
     async def test_response_delta_with_unknown_message_id_is_ignored(self) -> None:
-        bridge = JarvisBridge(build_isolated_application(Path(self._tmp.name)))
-        await bridge.start()
+        bridge = await self._bridge_with_session()
         try:
             event = AppEvent(
                 type="response.delta",

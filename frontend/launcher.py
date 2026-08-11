@@ -15,10 +15,11 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
-from app.application import JarvisApplication
-from app.core import JarvisCore
+from app.account_manager import AccountManager
 from config.logging_config import configure_logging
+from config.settings import settings
 from frontend.bridge import JarvisBridge
+from services.vosk_model_manager import VoiceModelManager
 
 QML_DIR = Path(__file__).resolve().parent / "qml"
 
@@ -42,9 +43,13 @@ def run() -> int:
     qt_app.setApplicationName("JARVIS")
     qt_app.setQuitOnLastWindowClosed(True)
 
-    core = JarvisCore()
-    application = JarvisApplication(core)
-    bridge = JarvisBridge(application, dev_mode=core.settings.dev_mode)
+    # `AccountManager` é dono do ciclo de vida de JarvisCore/JarvisApplication
+    # por usuário logado — não existe mais uma sessão única global (v0.9).
+    # `VoiceModelManager` é do dispositivo, não por conta (ver frontend/README.md,
+    # seção Voz: "não baixe um modelo idêntico por usuário").
+    account_manager = AccountManager(settings)
+    voice_model_manager = VoiceModelManager(models_dir=settings.stt_models_dir)
+    bridge = JarvisBridge(account_manager, voice_model_manager, dev_mode=settings.dev_mode)
 
     engine = QQmlApplicationEngine()
     engine.addImportPath(str(QML_DIR))
@@ -56,7 +61,11 @@ def run() -> int:
         return 1
 
     async def _main() -> None:
-        await bridge.start()
+        # Tenta continuar logado a partir de uma sessão local persistida;
+        # se não houver, o HUD mostra a tela de login (bridge.authenticated
+        # começa False) — login/registro reais acontecem por ação do
+        # usuário, via os slots `login`/`register` do próprio Bridge.
+        await bridge.initialize()
 
     QtAsyncio.run(_main(), keep_running=True, quit_qapp=True, handle_sigint=True)
     return 0

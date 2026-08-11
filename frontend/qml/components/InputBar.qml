@@ -13,7 +13,8 @@ Item {
     property bool busy: false
     property int maxLength: 4000
     property string voiceState: "idle" // idle | listening | processing_speech
-    property bool voiceAvailable: false
+    // Status real do STT (bridge.sttStatus — ver services/stt_service.py::STTStatus).
+    property string sttStatus: "unavailable"
     property string voiceUnavailableReason: "Microfone indisponível"
     property bool speaking: false
     signal sendRequested(string text)
@@ -109,7 +110,7 @@ Item {
                 id: micButton
                 anchors.verticalCenter: parent.verticalCenter
                 voiceState: bar.voiceState
-                available: bar.voiceAvailable
+                sttStatus: bar.sttStatus
                 unavailableReason: bar.voiceUnavailableReason
                 onClicked: bar.micToggleRequested()
             }

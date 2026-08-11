@@ -19,7 +19,7 @@ Rectangle {
     color: emphasis ? (mouseArea.containsMouse ? Theme.primaryBright : tint) : (mouseArea.containsMouse ? Theme.surfaceHover : "transparent")
     border.width: emphasis ? 0 : 1
     border.color: mouseArea.containsMouse ? Theme.borderStrong : Qt.rgba(1, 1, 1, 0.14)
-    opacity: mouseArea.pressed ? 0.85 : 1
+    opacity: !button.enabled ? 0.4 : (mouseArea.pressed ? 0.85 : 1)
     scale: mouseArea.pressed ? 0.97 : 1
     Behavior on color { ColorAnimation { duration: Theme.durationFast } }
     Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }

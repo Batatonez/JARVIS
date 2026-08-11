@@ -28,6 +28,26 @@ Window {
     property bool statusBooted: false
     property bool inputBooted: false
 
+    // --- Contas/sidebar (v0.9) ---
+    property bool sidebarExpanded: true
+    property bool accountPanelOpen: false
+    property bool voiceSetupOpen: false
+    property string sidebarSearchQuery: ""
+    readonly property var sidebarConversations: sidebarSearchQuery.length > 0
+        ? bridge.searchConversations(sidebarSearchQuery)
+        : bridge.conversations
+
+    // Compartilhado entre o clique do MicButton e o atalho Ctrl+Space —
+    // SETUP_REQUIRED abre o fluxo de instalação em vez de tentar gravar
+    // (ver services/stt_service.py::STTStatus e VoiceSetupOverlay.qml).
+    function handleMicToggle() {
+        if (bridge.sttStatus === "setup_required") {
+            window.voiceSetupOpen = true
+        } else {
+            bridge.toggleListening()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Encerramento limpo: intercepta o fechamento, deixa o Bridge encerrar
     // a Application Layer (cancela requisição pendente, fecha sessão de IA)
@@ -72,8 +92,9 @@ Window {
     // não um hotkey global do Windows; ver frontend/README.md, seção Voz).
     Shortcut {
         sequence: "Ctrl+Space"
-        enabled: bridge.voiceAvailable || bridge.jarvisState === "listening" || bridge.jarvisState === "processing_speech"
-        onActivated: bridge.toggleListening()
+        enabled: bridge.voiceAvailable || bridge.sttStatus === "setup_required"
+            || bridge.jarvisState === "listening" || bridge.jarvisState === "processing_speech"
+        onActivated: window.handleMicToggle()
     }
 
     // ------------------------------------------------------------------
@@ -128,6 +149,42 @@ Window {
             opacity: window.titleBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
         }
+
+        AuthScreen {
+            id: authScreen
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: !bridge.authenticated
+            onLoginRequested: (username, password) => bridge.login(username, password)
+            onRegisterRequested: (username, displayName, password) => bridge.register(username, displayName, password)
+        }
+
+        RowLayout {
+            id: hudRow
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: bridge.authenticated
+            spacing: 0
+
+            Sidebar {
+                id: sidebar
+                Layout.fillHeight: true
+                expanded: window.sidebarExpanded
+                conversations: window.sidebarConversations
+                currentConversationId: bridge.currentConversationId
+                currentUser: bridge.currentUser
+                onNewConversationRequested: bridge.startNewConversation()
+                onConversationSelected: (conversationId) => bridge.openConversation(conversationId)
+                onDeleteRequested: (conversationId) => bridge.deleteConversation(conversationId)
+                onSearchTextChanged: (query) => window.sidebarSearchQuery = query
+                onAccountClicked: window.accountPanelOpen = true
+                onToggleRequested: window.sidebarExpanded = !window.sidebarExpanded
+            }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
 
         RowLayout {
             Layout.fillWidth: true
@@ -234,15 +291,6 @@ Window {
                 }
 
                 Item { Layout.fillHeight: true }
-
-                ActionButton {
-                    Layout.alignment: Qt.AlignHCenter
-                    label: "NOVA CONVERSA"
-                    tooltip: "Limpa a conversa atual e reinicia a sessão de IA (não apaga a memória)"
-                    onClicked: bridge.newConversation()
-                }
-
-                Item { Layout.preferredHeight: Theme.spacingLg }
             }
 
             // -- Painel de conversa --
@@ -296,19 +344,19 @@ Window {
                 anchors.right: parent.right
                 busy: bridge.busy
                 voiceState: bridge.jarvisState
-                voiceAvailable: bridge.voiceAvailable
-                // Mic ausente e "modelo de STT não instalado" são situações
+                sttStatus: bridge.sttStatus
+                // Mic ausente e falha ao abrir o dispositivo são situações
                 // diferentes (ver frontend/README.md, seção Voz) — a
                 // tooltip do MicButton nunca deve "desaparecer misteriosamente".
-                voiceUnavailableReason: !bridge.microphoneAvailable
-                    ? "Microfone não detectado"
-                    : !bridge.sttReady
-                        ? "Reconhecimento de fala requer modelo (ver frontend/README.md)"
-                        : "Microfone indisponível"
+                // SETUP_REQUIRED tem sua própria tooltip fixa (MicButton.qml)
+                // e não usa esta mensagem.
+                voiceUnavailableReason: bridge.sttStatus === "no_microphone"
+                    ? "Nenhum microfone encontrado."
+                    : "Não foi possível abrir o microfone."
                 speaking: bridge.jarvisState === "speaking"
                 onSendRequested: (text) => bridge.sendMessage(text)
                 onCancelRequested: bridge.cancelCurrentRequest()
-                onMicToggleRequested: bridge.toggleListening()
+                onMicToggleRequested: window.handleMicToggle()
                 onStopSpeakingRequested: bridge.stopSpeaking()
             }
 
@@ -343,6 +391,8 @@ Window {
                 Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
             }
         }
+        }
+        }
     }
 
     Connections {
@@ -364,6 +414,12 @@ Window {
         }
         function onTranscriptionReady(text) {
             inputBar.insertTranscription(text)
+        }
+        function onAuthErrorRaised(message) {
+            authScreen.errorMessage = message
+        }
+        function onVoiceModelInstalledChanged() {
+            if (bridge.voiceModelInstalled) window.voiceSetupOpen = false
         }
     }
 
@@ -433,6 +489,32 @@ Window {
         request: bridge.pendingPermission
         onApproved: (id) => bridge.approvePermission(id)
         onDenied: (id) => bridge.denyPermission(id)
+    }
+
+    AccountPanel {
+        objectName: "accountPanel"
+        anchors.fill: parent
+        z: 100
+        open: window.accountPanelOpen
+        user: bridge.currentUser
+        onCloseRequested: window.accountPanelOpen = false
+        onLogoutRequested: {
+            window.accountPanelOpen = false
+            bridge.logout()
+        }
+    }
+
+    VoiceSetupOverlay {
+        objectName: "voiceSetupOverlay"
+        anchors.fill: parent
+        z: 100
+        open: window.voiceSetupOpen
+        modelInfo: bridge.voiceModelInfo
+        downloadActive: bridge.voiceModelDownloadActive
+        downloadProgress: bridge.voiceModelDownloadProgress
+        onDownloadRequested: bridge.downloadVoiceModel()
+        onCancelRequested: bridge.cancelVoiceModelDownload()
+        onCloseRequested: window.voiceSetupOpen = false
     }
 
     // ------------------------------------------------------------------

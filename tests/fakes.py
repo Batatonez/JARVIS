@@ -6,7 +6,7 @@ Anthropic, Vosk, SAPI, ou qualquer outro).
 import asyncio
 
 from services.ai_service import AIService
-from services.stt_service import STTUnavailableError, SpeechToTextService
+from services.stt_service import STTStatus, STTUnavailableError, SpeechToTextService
 from services.tts_service import TTSUnavailableError, TextToSpeechService
 
 
@@ -77,12 +77,21 @@ class FakeSTTService(SpeechToTextService):
         *,
         available: bool = True,
         microphone: bool = True,
+        status: STTStatus | None = None,
         transcript: str = "",
         fail_transcription: bool = False,
         delay: float = 0.0,
     ) -> None:
         self._available = available
         self._microphone = microphone
+        if status is not None:
+            self._status = status
+        elif not available:
+            self._status = STTStatus.SETUP_REQUIRED
+        elif not microphone:
+            self._status = STTStatus.NO_MICROPHONE
+        else:
+            self._status = STTStatus.READY
         self._transcript = transcript
         self._fail_transcription = fail_transcription
         self._delay = delay
@@ -93,6 +102,10 @@ class FakeSTTService(SpeechToTextService):
 
     def is_available(self) -> bool:
         return self._available
+
+    @property
+    def status(self) -> STTStatus:
+        return self._status
 
     @property
     def microphone_available(self) -> bool:

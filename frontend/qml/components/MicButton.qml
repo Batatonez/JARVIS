@@ -10,9 +10,12 @@ Item {
     id: button
 
     property string voiceState: "idle" // idle | listening | processing_speech
-    property bool available: true
+    // Status real do reconhecimento de fala (services/stt_service.py::STTStatus,
+    // via bridge.sttStatus): "ready" | "setup_required" | "no_microphone" | "unavailable".
+    // Nunca presume "pronto" — reflete exatamente o que o backend confirmou.
+    property string sttStatus: "unavailable"
     // Mensagem específica de por que a voz não está disponível (mic
-    // ausente vs. modelo Vosk não instalado são coisas diferentes — ver
+    // ausente vs. erro ao abrir o dispositivo são coisas diferentes — ver
     // frontend/README.md, seção Voz) — nunca "desaparece misteriosamente".
     property string unavailableReason: "Microfone indisponível"
     signal clicked()
@@ -22,7 +25,18 @@ Item {
 
     readonly property bool listening: voiceState === "listening"
     readonly property bool processing: voiceState === "processing_speech"
-    property color tint: !button.available ? Theme.textFaint
+    // Cinco estados visuais (v0.9), nessa ordem de precedência: uma captura já
+    // em andamento manda mais que o status estático do STT.
+    readonly property string micState: button.listening ? "listening"
+        : button.processing ? "processing"
+        : button.sttStatus === "setup_required" ? "setup_required"
+        : button.sttStatus === "ready" ? "ready"
+        : "error"
+    readonly property bool clickable: button.micState === "setup_required"
+        || button.micState === "ready"
+        || button.micState === "listening"
+    property color tint: button.micState === "error" ? Theme.danger
+        : button.micState === "setup_required" ? Theme.warning
         : button.listening ? Theme.violet
         : button.processing ? Theme.blue
         : (mouseArea.containsMouse ? Theme.textPrimary : Theme.textMuted)
@@ -43,17 +57,31 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: Theme.radiusMedium
-        color: button.listening ? Qt.rgba(0.608, 0.420, 1.0, 0.16) : (mouseArea.containsMouse && button.available ? Theme.surfaceHover : "transparent")
+        color: button.listening ? Qt.rgba(0.608, 0.420, 1.0, 0.16) : (mouseArea.containsMouse && button.clickable ? Theme.surfaceHover : "transparent")
         border.width: button.listening ? 1 : 0
         border.color: Theme.violet
         Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+    }
+
+    // Selo discreto em SETUP_REQUIRED — sinaliza "precisa de uma ação" sem
+    // gritar (não é um erro, é um convite a instalar o modelo de voz).
+    Rectangle {
+        visible: button.micState === "setup_required"
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 2
+        anchors.rightMargin: 2
+        width: 7; height: 7; radius: 3.5
+        color: Theme.warning
+        border.width: 1
+        border.color: Theme.background
     }
 
     Item {
         id: glyph
         anchors.centerIn: parent
         width: 12; height: 16
-        opacity: button.available ? 1 : 0.4
+        opacity: button.micState === "error" ? 0.45 : 1
 
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -111,15 +139,16 @@ Item {
         id: mouseArea
         anchors.fill: parent
         hoverEnabled: true
-        enabled: button.available && !button.processing
+        enabled: button.clickable
         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
         onClicked: button.clicked()
     }
 
     ToolTip.visible: mouseArea.containsMouse
     ToolTip.delay: 500
-    ToolTip.text: !button.available ? button.unavailableReason
-        : button.listening ? "Parar gravação (Ctrl+Space)"
-        : button.processing ? "Transcrevendo..."
+    ToolTip.text: button.micState === "setup_required" ? "Configurar reconhecimento de voz"
+        : button.micState === "error" ? button.unavailableReason
+        : button.micState === "listening" ? "Parar gravação (Ctrl+Space)"
+        : button.micState === "processing" ? "Transcrevendo..."
         : "Gravar (Ctrl+Space)"
 }

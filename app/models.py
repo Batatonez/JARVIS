@@ -129,3 +129,38 @@ class PermissionRequest:
     risk_level: RiskLevel
     id: str = field(default_factory=_new_id)
     status: PermissionStatus = PermissionStatus.PENDING
+
+
+class Plan(Enum):
+    """Ver `app/entitlements.py` — nenhuma outra parte do projeto deve
+    comparar `plan == Plan.PRO` diretamente; sempre passar pela função
+    `entitlements_for()`."""
+
+    FREE = "free"
+    PRO = "pro"
+
+
+@dataclass(frozen=True)
+class User:
+    """Identidade pública de uma conta local (v0.9 — ver `app/account_manager.py`).
+    Deliberadamente NUNCA carrega `password_hash` nem qualquer segredo — este
+    é o tipo que cruza para o frontend; o hash fica só dentro de
+    `services/user_repository.py`."""
+
+    id: str
+    username: str
+    display_name: str
+    plan: Plan
+    created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass(frozen=True)
+class ConversationSummary:
+    """Uma linha da lista de conversas (sidebar) — sem as mensagens, só o
+    suficiente para listar/buscar/agrupar por data."""
+
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int

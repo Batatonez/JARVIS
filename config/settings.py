@@ -15,15 +15,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "0.8.0"
+    core_version: str = "0.9.0"
 
     project_root: Path = PROJECT_ROOT
+    # Memória legacy (pré-contas, v0.1-v0.8) — nunca apagada, só lida uma vez
+    # por `services/memory_migration.py` para copiar para a primeira conta
+    # criada neste ambiente. Ver docs/architecture.md, seção Contas.
     memory_dir: Path = PROJECT_ROOT / "memory"
     profile_path: Path = PROJECT_ROOT / "memory" / "profile.md"
     preferences_path: Path = PROJECT_ROOT / "memory" / "preferences.md"
 
     log_dir: Path = PROJECT_ROOT / "logs"
     log_path: Path = PROJECT_ROOT / "logs" / "jarvis.log"
+
+    # --- Dados locais (v0.9 — contas, chats, modelos de voz) ---
+    # Tudo aqui é local e pessoal: nunca vai para o Git (ver .gitignore).
+    data_dir: Path = PROJECT_ROOT / "data"
+    db_path: Path = PROJECT_ROOT / "data" / "jarvis.db"
+    users_dir: Path = PROJECT_ROOT / "data" / "users"
+    # Token de sessão local (bearer opaco, nunca a senha) para continuar
+    # logado entre execuções — ver services/session_store.py.
+    session_token_path: Path = PROJECT_ROOT / "data" / "session.local"
+    # Modelos de voz baixados pelo próprio JARVIS (nunca automaticamente —
+    # ver services/vosk_model_manager.py). Movido de `voice_models/` (v0.7)
+    # para dentro de `data/` — mesma regra de "nunca no Git" que o resto.
+    stt_models_dir: Path = PROJECT_ROOT / "data" / "models" / "vosk"
 
     dev_mode: bool = os.environ.get("JARVIS_DEV") == "1"
 
@@ -49,10 +65,11 @@ class Settings:
     # o HUD liga/desliga em runtime via JarvisApplication.set_voice_output_enabled().
     voice_output_enabled: bool = os.environ.get("JARVIS_VOICE_OUTPUT", "0") == "1"
     # Caminho do modelo Vosk offline (nunca baixado automaticamente pelo
-    # JARVIS — ver frontend/README.md para o comando de download manual).
-    # Não versionado: ver .gitignore ("voice_models/").
+    # JARVIS — ver services/vosk_model_manager.py e frontend/README.md,
+    # seção Voz, para o fluxo de instalação pelo próprio app).
+    # Não versionado: ver .gitignore ("data/").
     stt_model_path: Path = Path(
-        os.environ.get("JARVIS_STT_MODEL_PATH", str(PROJECT_ROOT / "voice_models" / "vosk-model-small-pt"))
+        os.environ.get("JARVIS_STT_MODEL_PATH", str(PROJECT_ROOT / "data" / "models" / "vosk" / "vosk-model-small-pt"))
     )
     # Substring (case-insensitive) do nome de uma voz SAPI5 instalada no
     # Windows. Vazio/None = escolhe automaticamente (preferência por uma voz
