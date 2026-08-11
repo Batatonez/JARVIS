@@ -1,3 +1,9 @@
-# Claude Agent SDK oficial — único dependência externa do JARVIS Core v0.3,
-# usada por services/claude_agent_provider.py para conectar o ClaudeAgentProvider.
+# Claude Agent SDK oficial — usada por services/claude_agent_provider.py
+# para conectar o ClaudeAgentProvider.
 claude-agent-sdk>=0.2.134,<1.0.0
+
+# PySide6 (Qt for Python) — frontend/HUD (v0.5). Inclui QtQuick/QML, Qt
+# Quick Shapes/Effects, e PySide6.QtAsyncio (integração oficial Qt+asyncio,
+# usada em frontend/launcher.py — nenhuma dependência extra de terceiros
+# para isso). O terminal (main.py) não depende de PySide6.
+PySide6>=6.9,<7.0

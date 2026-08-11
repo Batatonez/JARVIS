@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "0.4.0"
+    core_version: str = "0.5.0"
 
     project_root: Path = PROJECT_ROOT
     memory_dir: Path = PROJECT_ROOT / "memory"

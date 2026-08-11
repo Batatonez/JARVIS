@@ -4,14 +4,15 @@
 
 ## Estado atual em uma frase
 
-**JARVIS Backend v0.4**: uma Application Layer (`JarvisApplication`) estável entre qualquer frontend e o Core, com histórico de conversa em runtime, stream de eventos, status consolidado e cancelamento — sobre o mesmo `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` da v0.3, sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje continua sendo o fallback seguro (`UnavailableAIService`).
+**JARVIS Frontend/HUD v0.5**: a primeira interface gráfica real (PySide6/QML), consumindo a mesma Application Layer (`JarvisApplication`) que o terminal — histórico de conversa em runtime, stream de eventos, status consolidado, cancelamento, tudo sobre o `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` já existentes, sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje continua sendo o fallback seguro (`UnavailableAIService`) — o HUD mostra isso claramente (`AI OFFLINE`), sem fingir conexão.
 
 ## Visão geral (arquitetura-alvo, planejada)
 
 ```
                     ┌─────────────────────┐
-                    │  FUTURE FRONTENDS   │
-                    │ HUD / Voice / CLI   │
+                    │      FRONTENDS      │
+                    │ HUD (v0.5) / Voice  │
+                    │   / CLI (terminal)  │
                     └──────────┬──────────┘
                                │
                                ↓
@@ -52,7 +53,7 @@ Application  →  TTS
 
 ## Application Layer — a fronteira entre Core e frontend
 
-**Status: implementado (v0.4).** `JarvisApplication` (`app/application.py`) é a **única** porta de entrada que um frontend deve usar — terminal hoje, HUD/voz no futuro. Documentação completa da API pública em [`docs/application-api.md`](application-api.md); aqui vai só o desenho:
+**Status: implementado (v0.4).** `JarvisApplication` (`app/application.py`) é a **única** porta de entrada que um frontend deve usar — terminal e HUD hoje, voz no futuro. Documentação completa da API pública em [`docs/application-api.md`](application-api.md); aqui vai só o desenho:
 
 ```
 Frontend (terminal, futuro HUD, futura voz)
@@ -82,27 +83,45 @@ Um frontend **nunca** deve fazer `from services.claude_agent_provider import Cla
 
 **Streaming (preparado, não exposto)** — `send_message()` devolve o texto final via `AssistantResponse.content` (`str`), mas o contrato de eventos já inclui `response.started` → `response.completed`/`response.failed`; adicionar `response.delta` para token-a-token é uma extensão local a `send_message()`/`ClaudeAgentProvider.ask()`, sem mudar a API pública.
 
-## Como isso mapeia para o código hoje (v0.4)
+## Como isso mapeia para o código hoje (v0.5)
 
-Como ainda não existe HUD, o terminal é o primeiro (e único) frontend real, falando com `JarvisApplication` — não mais diretamente com `JarvisCore`. Todo o caminho é assíncrono (`asyncio`), com um único event loop criado em `main.py`:
+Existem dois frontends reais, os dois falando com o mesmo `JarvisApplication` — nenhum fala com `JarvisCore` diretamente. Todo o caminho é assíncrono (`asyncio`), cada frontend com seu próprio event loop (`main.py` usa `asyncio.run(...)`; `frontend/launcher.py` usa `PySide6.QtAsyncio.run(...)`, ver seção seguinte):
 
 ```
-main.py  →  asyncio.run(...)
-  ↓
-app/terminal.py        (apresentação: loop de input/print no terminal — async)
-  ↓
-app/application.py     (JarvisApplication: fronteira estável — async)
-  ↓
-app/core.py             (JarvisCore: fachada, estado, ciclo de vida — async)
-  ↓
-app/orchestrator.py     (Orchestrator: comando vs. mensagem — async)
-  ↓
-app/commands.py         (comandos internos, síncronos: /help /status /memory /new /clear /exit)
-  ↓
-services/                (memory_service, ai_service + create_ai_service, claude_agent_provider, runtime_identity, event_bus)
+main.py  →  asyncio.run(...)              frontend/__main__.py  →  QtAsyncio.run(...)
+  ↓                                          ↓
+app/terminal.py (async)                    frontend/launcher.py + frontend/bridge.py (JarvisBridge)
+  ↓                                          ↓
+                    app/application.py     (JarvisApplication: fronteira estável — async)
+                              ↓
+                    app/core.py             (JarvisCore: fachada, estado, ciclo de vida — async)
+                              ↓
+                    app/orchestrator.py     (Orchestrator: comando vs. mensagem — async)
+                              ↓
+                    app/commands.py         (comandos internos, síncronos: /help /status /memory /new /clear /exit)
+                              ↓
+                    services/                (memory_service, ai_service + create_ai_service, claude_agent_provider, runtime_identity, event_bus)
 ```
 
-Quando o HUD gráfico for criado, ele deve falar com o mesmo `JarvisApplication` sem duplicar lógica — apenas somar uma nova camada de apresentação ao lado de (ou no lugar de) `app/terminal.py`.
+## Frontend/HUD — [`frontend/`](../frontend/)
+
+**Status: implementado (v0.5).** Segundo frontend, ao lado do terminal — não substitui `app/terminal.py`, os dois continuam existindo e ambos falam só com `JarvisApplication`. Documentação completa em [`frontend/README.md`](../frontend/README.md); aqui vai só o desenho arquitetural:
+
+```
+JARVIS HUD (PySide6 / QML)
+    ↓
+frontend/bridge.py (JarvisBridge — QObject, sem lógica de domínio, só tradução)
+    ↓
+JarvisApplication
+```
+
+O QML **nunca** importa `app/core.py`, `app/application.py`, `services/` ou o Claude Agent SDK — só conhece `bridge`, exposto como propriedade de contexto (`engine.rootContext().setContextProperty("bridge", bridge)`). `JarvisBridge` expõe Properties Qt (`jarvisState`, `running`, `busy`, `memoryAvailable`, `aiConfigured`, `aiBackend`, `aiSessionActive`, `activeConversation`, `pendingPermission`, `messages`, `devMode`, `canClose`) e Slots (`sendMessage`, `cancelCurrentRequest`, `newConversation`, `approvePermission`, `denyPermission`, `requestShutdown`) — QML nunca interpreta string de `/status`.
+
+**Orientado a eventos, nunca a polling**: na inicialização, `JarvisBridge.start()` chama `JarvisApplication.subscribe()` (síncrono — a fila é registrada imediatamente) e consome essa fila em uma única task de fundo; cada evento relevante dispara uma releitura pontual de `get_status()`/`get_messages()`, nunca em loop/timer.
+
+**Integração Qt + asyncio**: `PySide6.QtAsyncio` (módulo oficial do Qt for Python, incluso no `PySide6` já instalado — nenhuma dependência extra como `qasync`) funde o event loop do Qt e do asyncio em um só processo, sem thread extra e sem recriar o loop por mensagem.
+
+Quando o HUD é fechado, `Window.onClosing` intercepta e chama `bridge.requestShutdown()`, que cancela requisição pendente, encerra a sessão de IA (`JarvisApplication.stop()`) e só então deixa a janela fechar — sem tasks órfãs.
 
 ## Camada de IA: AIService → ClaudeAgentProvider
 
@@ -188,9 +207,9 @@ O Core lê perfil e preferências via `MemoryService` e monta um contexto contro
 ### Usuário
 Ponto de entrada de tudo: fala ou digita um pedido, e recebe respostas em texto e/ou voz.
 
-### App / HUD — [`app/`](../app/)
-**Status: implementado parcialmente (terminal + Application Layer).**
-Hoje é uma interface de terminal (`app/terminal.py`) fina — só lê input, imprime output e trata encerramento (Ctrl+C, EOF, `/exit`), falando com `JarvisApplication` (ver seção acima). O pacote `app/` também contém o núcleo de execução (`JarvisCore`, `Orchestrator`, `commands.py`, `state.py`) e a Application Layer (`application.py`, `models.py`, `conversation.py`, `status.py`, `permissions.py`) — tudo fica aqui por ser a aplicação em si, a parte que será reaproveitada quando o HUD gráfico existir. HUD visual e voz **não** existem ainda.
+### App / HUD — [`app/`](../app/), [`frontend/`](../frontend/)
+**Status: implementado (terminal + HUD gráfico + Application Layer).**
+Dois frontends hoje: o terminal (`app/terminal.py`), fino — só lê input, imprime output e trata encerramento (Ctrl+C, EOF, `/exit`) — e o HUD gráfico (`frontend/`, PySide6/QML, ver seção "Frontend/HUD" acima), os dois falando com `JarvisApplication`. O pacote `app/` também contém o núcleo de execução (`JarvisCore`, `Orchestrator`, `commands.py`, `state.py`) e a Application Layer (`application.py`, `models.py`, `conversation.py`, `status.py`, `permissions.py`). Voz **não** existe ainda.
 
 ### Orquestrador JARVIS — [`app/orchestrator.py`](../app/orchestrator.py)
 **Status: implementado.**
@@ -260,37 +279,39 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 
 ## O que já existe vs. o que é planejamento
 
-**IMPLEMENTADO NO v0.4:**
-- Application Layer (`JarvisApplication`, `app/application.py`) — fronteira estável entre Core e qualquer frontend
+**IMPLEMENTADO NO v0.5:**
+- HUD gráfico (`frontend/`, PySide6/QML, `python -m frontend`) — núcleo de IA animado reagindo a estado real, chat, status, cancelamento, nova conversa, overlay de permissão preparado (ver seção "Frontend/HUD" acima e [`frontend/README.md`](../frontend/README.md))
+- `JarvisBridge` (`frontend/bridge.py`) — ponte fina, orientada a eventos (sem polling), entre QML e `JarvisApplication`
+- Application Layer (`JarvisApplication`, `app/application.py`) — fronteira estável entre Core e qualquer frontend (terminal e HUD)
 - Modelos de domínio sem dependência do Agent SDK (`app/models.py`): `Message`, `AssistantResponse`, `StatusSnapshot`, `AppEvent`, `PermissionRequest`, etc.
 - Histórico de conversa em runtime (`app/conversation.py`), separado e nunca confundido com `memory/`
 - Stream de eventos para consumidores externos (`subscribe()`/`unsubscribe()`/`events()`), sem WebSocket/servidor
 - Status consolidado com fonte única (`app/status.py`), usado tanto por `/status` quanto por `get_status()`
 - Política de concorrência (uma requisição ativa por conversa, rejeição limpa) e cancelamento (`asyncio.Task.cancel()`)
 - Erros de domínio estruturados para a interface (`AppErrorCode`: `AI_UNAVAILABLE`, `JARVIS_BUSY`, `INTERNAL_ERROR`)
-- "Nova conversa" (`/new`, alias `/reset`): limpa histórico runtime e reinicia a sessão de IA, sem tocar `memory/`
-- Fundação de permissões em memória (`app/permissions.py`), não conectada a ferramentas reais
+- "Nova conversa" (`/new`, alias `/reset` no terminal; controle "NOVA CONVERSA" no HUD): limpa histórico runtime e reinicia a sessão de IA, sem tocar `memory/`
+- Fundação de permissões em memória (`app/permissions.py`), com UI de overlay pronta no HUD — não conectada a ferramentas reais
 - Terminal migrado para consumir `JarvisApplication`, não mais `JarvisCore` diretamente
-- Tudo o que já era v0.3 (Claude Agent SDK, lifecycle, fallback, memória somente-leitura, estados, event bus interno)
-- 91 testes automatizados, todos offline (mocks/fakes, sem chamada real)
-- Core/Application funcionais sem qualquer API key configurada
+- Tudo o que já era v0.3/v0.4 (Claude Agent SDK, lifecycle, fallback, memória somente-leitura, estados, event bus interno)
+- 105 testes automatizados, todos offline (mocks/fakes, sem chamada real, incluindo smoke test de QML offscreen)
+- Core/Application/HUD funcionais sem qualquer API key configurada
 
 **PREPARADO, MAS NÃO ATIVADO:**
 - Conexão real com Claude (arquitetura pronta; falta `ANTHROPIC_API_KEY` no ambiente)
 - Sessão real de conversa contínua (testada com fakes; não validada com IA real nesta etapa)
-- Streaming real token-a-token (contrato de eventos já existe; falta só a extensão em `ClaudeAgentProvider.ask()`)
+- Streaming real token-a-token (contrato de eventos já existe; falta só a extensão em `ClaudeAgentProvider.ask()` e ligar `response.delta` no HUD)
 - Configuração futura de API key (`.env.example` documenta as variáveis; nenhum valor real existe no repositório)
 
 **PLANEJADO:**
-- Aplicativo/HUD gráfico (v0.5) e streaming visual
-- Voz: entrada (STT) e saída (TTS)
-- Permissões interativas de verdade (GUI perguntando "Permitir/Negar", conectada a ferramentas reais)
+- Voz: entrada (STT) e saída (TTS) — o núcleo visual do HUD já está preparado para os estados `LISTENING`/`SPEAKING`, mas nada de áudio existe
+- Permissões interativas de verdade (overlay do HUD já existe; falta conectar a ferramentas reais)
 - Ferramentas de computador (READ/ACTION/DANGEROUS conectado à execução)
 - MCP
 - Subagentes especializados
+- **Ruflo** / orquestração multiagente — inclusive uma futura representação visual ("painel AGENTS") no HUD, não implementada
 - Skills em runtime
 - Memória avançada (embeddings, busca semântica, memória de curto/longo prazo)
 - Persistência de sessão e de conversas entre execuções
-- Ruflo / orquestração multiagente
+- Tela de configurações, temas alternativos, empacotamento como aplicativo Windows instalável
 
 Qualquer trabalho futuro deve atualizar este documento se a arquitetura real divergir do que está descrito aqui.
