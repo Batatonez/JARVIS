@@ -1,15 +1,16 @@
 # frontend/
 
-O HUD do JARVIS — interface gráfica real do projeto, introduzida no v0.5 e
-refinada visualmente no **v0.6 (HUD Refinement / UX Foundation)**. PySide6
-(Qt for Python) + Qt Quick/QML. O terminal (`python main.py`,
-`app/terminal.py`) continua existindo, separado e inalterado — este é um
-segundo frontend, não uma substituição.
+O HUD do JARVIS — interface gráfica real do projeto, introduzida no v0.5,
+refinada visualmente no v0.6 (HUD Refinement / UX Foundation) e com voz
+desde o **v0.7 (Voice Foundation)**. PySide6 (Qt for Python) + Qt Quick/QML.
+O terminal (`python main.py`, `app/terminal.py`) continua existindo,
+separado e inalterado — este é um segundo frontend, não uma substituição, e
+não ganhou voz (é um recurso específico do HUD).
 
-**v0.6 não muda a arquitetura do v0.5** (HUD → Bridge → JarvisApplication
-continua igual) — é refinamento visual/UX sobre a mesma base: contraste,
-núcleo v2, layout, boot em etapas, e a correção de um bug real do
-`PermissionOverlay` (ver seção "Permissões" abaixo).
+**v0.7 não muda a arquitetura do v0.5/v0.6** (HUD → Bridge → JarvisApplication
+continua igual) — soma um `VoiceService` na Application Layer, ao lado do
+`JarvisCore`, e o HUD passa a falar com ele através do mesmo Bridge, nunca
+diretamente com STT/TTS (ver seção "Voz" abaixo).
 
 ## Como executar
 
@@ -20,6 +21,11 @@ python -m frontend
 
 Sem `ANTHROPIC_API_KEY` configurada, o HUD abre normalmente e mostra
 `AI OFFLINE` — não trava, não pede credencial, não finge estar conectado.
+`requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`,
+`pyttsx3`); a fala (TTS) funciona assim que elas estão instaladas, mas o
+microfone (STT) só liga depois de baixar manualmente o modelo Vosk — ver
+seção "Voz" abaixo. Sem o modelo, o botão de microfone aparece desabilitado
+e o resto do HUD funciona normalmente.
 
 ## Arquitetura
 
@@ -31,15 +37,22 @@ Frontend Bridge (frontend/bridge.py)
         │
         ↓
 JarvisApplication (app/application.py)
-        │
+        │              \
+        ↓                → VoiceService (services/voice_service.py)
+JarvisCore → Orchestrator      ├→ SpeechToTextService (STT)
+        │                      └→ TextToSpeechService (TTS)
         ↓
-JarvisCore → Orchestrator → AIService / MemoryService / Services
+AIService / MemoryService / Services
 ```
 
 O QML **nunca** importa nada de `services/`, `app/core.py`,
-`app/application.py` ou o Claude Agent SDK — só conhece `bridge`, exposto
-como propriedade de contexto do QML (`engine.rootContext().setContextProperty("bridge", bridge)`
-em `frontend/launcher.py`).
+`app/application.py`, o Claude Agent SDK, `vosk`, `sounddevice` ou
+`pyttsx3` — só conhece `bridge`, exposto como propriedade de contexto do
+QML (`engine.rootContext().setContextProperty("bridge", bridge)` em
+`frontend/launcher.py`). `VoiceService` também não conhece Qt: fala só com
+`SpeechToTextService`/`TextToSpeechService` (abstrações) e emite no mesmo
+`EventBus` interno que `JarvisCore` já usava desde o v0.3 — quem traduz
+tudo isso para QML continua sendo só o Bridge.
 
 ### `frontend/bridge.py` — `JarvisBridge`
 
@@ -47,9 +60,11 @@ Ponte fina entre QML e `JarvisApplication`: sem lógica de domínio, só
 tradução. Expõe Properties Qt (`jarvisState`, `running`, `busy`,
 `memoryAvailable`, `aiConfigured`, `aiBackend`, `aiSessionActive`,
 `activeConversation`, `pendingPermission`, `messages`, `devMode`,
-`canClose`) e Slots (`sendMessage`, `cancelCurrentRequest`,
+`canClose`, `voiceAvailable`, `ttsReady`, `voiceOutputEnabled`,
+`voiceLevel`) e Slots (`sendMessage`, `cancelCurrentRequest`,
 `newConversation`, `approvePermission`, `denyPermission`,
-`requestShutdown`, `simulateState` — este último só ativo com `devMode`).
+`requestShutdown`, `simulateState` — dev only —, `toggleListening`,
+`cancelListening`, `stopSpeaking`, `setVoiceOutputEnabled`).
 
 **Nunca faz polling.** Na inicialização, chama `JarvisApplication.subscribe()`
 (síncrono — a fila é registrada imediatamente, sem depender de uma task
@@ -102,8 +117,10 @@ frontend/qml/
     ├── JarvisCore.qml         núcleo animado — o elemento visual principal
     ├── ChatPanel.qml          lista de conversa, scroll inteligente, indicador de resposta pendente
     ├── MessageItem.qml        uma mensagem (bloco discreto, não bubble)
-    ├── InputBar.qml           entrada multiline, Enter envia, Shift+Enter quebra linha
-    ├── StatusPanel.qml        faixa de status real (CORE/MEMORY/AI/SESSION)
+    ├── InputBar.qml           entrada multiline + microfone: [texto][MIC][SEND]
+    ├── MicButton.qml          botão de microfone (idle/listening/processing_speech) — v0.7
+    ├── Waveform.qml           nível de voz real durante LISTENING — v0.7
+    ├── StatusPanel.qml        faixa de status real (CORE/MEMORY/AI/SESSION/VOICE + OUTPUT ON/OFF)
     ├── StatusIndicator.qml    ponto + label reutilizável
     ├── ActionButton.qml       botão genérico reutilizável (com tooltip embutido)
     └── PermissionOverlay.qml  pedido de permissão (READ/ACTION/DANGEROUS)
@@ -134,22 +151,28 @@ girando numa velocidade própria — a camada nova do v0.6, dá profundidade
 sem virar bagunça visual), partículas orbitais, e um núcleo central com
 pulso de "respiração".
 
-Reage a estado real via três propriedades (`state`, `aiConfigured`,
-`aiSessionActive`), vindas do Bridge — `idle | thinking | working |
-listening | speaking | waiting_confirmation | error` são os únicos estados
-válidos hoje (`app/state.py`), e o componente já sabe reagir a todos eles
-mesmo que o backend só produza `idle`/`thinking`/`error` em runtime:
+Reage a estado real via quatro propriedades (`state`, `aiConfigured`,
+`aiSessionActive`, `voiceLevel`), vindas do Bridge — `idle | thinking |
+working | listening | processing_speech | speaking | waiting_confirmation |
+error` são os únicos estados válidos hoje (`app/state.py`):
 - **IDLE** — respiração suave, rotações lentas independentes.
-- **THINKING/WORKING/LISTENING/SPEAKING** — rotação mais rápida, pulso mais
-  forte (`alert`).
+- **LISTENING** — cor violeta (`Theme.violet`, para não se confundir com
+  THINKING), e o núcleo passa a reagir a `voiceLevel` **de verdade**: o halo
+  central e o anel externo pulsam com o nível real do microfone (throttled
+  a ~20 updates/s na origem, suavizado por um `Behavior` de 90ms) — não é
+  uma animação genérica, para de reagir no instante em que o áudio para.
+- **PROCESSING_SPEECH** — usa o pulso "alert" padrão (como THINKING),
+  enquanto a transcrição termina.
+- **THINKING/WORKING** — rotação mais rápida, pulso mais forte (`alert`).
+- **SPEAKING** — cor azul elétrica (`Theme.blue`), mesmo pulso "alert".
 - **WAITING_CONFIRMATION** — accent âmbar (`Theme.stateColor`), sem acelerar
   a rotação — é espera, não processamento.
 - **ERROR** — accent vermelho/coral com transição suave, pulso de alerta
   mais rápido (mesmo `alert` do THINKING) e o anel interno **congela**
   brevemente (`running: !core.errored`) para dar sensação de interrupção —
   sem flash agressivo — e retoma sozinho quando o estado sai de `error`.
-- **Sem IA configurada/sessão inativa** — brilho reduzido (`dim = 0.72`,
-  era 0.68 no v0.5), mas o núcleo nunca "morre" nem some.
+- **Sem IA configurada/sessão inativa** — brilho reduzido (`dim = 0.72`),
+  mas o núcleo nunca "morre" nem some.
 
 ### Boot, resize, fullscreen
 
@@ -191,6 +214,152 @@ da mesma forma. Coberto por `tests/test_qml_smoke.py`
 (`test_permission_overlay_hidden_when_no_pending_request` e
 `test_permission_overlay_visible_with_pending_request`).
 
+## Voz (v0.7) — push-to-talk
+
+Entrada (STT) e saída (TTS) de voz, ambas offline, ambas opcionais — sem
+nenhuma delas instalada/configurada, o JARVIS funciona normalmente por
+texto (voz é uma capability, não uma dependência).
+
+### Providers escolhidos e por quê
+
+**STT: [Vosk](https://alphacephei.com/vosk/)** (`services/vosk_stt_provider.py`).
+Offline, Apache 2.0, modelos pequenos (dezenas de MB) com suporte a pt-BR,
+bindings Python oficiais, funciona em CPU sem GPU. Comparado a alternativas
+baseadas em Whisper (`faster-whisper`, `whisper.cpp`): estas puxam `torch`
+ou toolchains C++ pesadas como dependência transitiva — exatamente o tipo
+de "infraestrutura enorme" que o v0.7 pediu para evitar. Vosk é uma
+biblioteca leve (a única coisa "grande" é o modelo, baixado à parte, nunca
+automaticamente — ver abaixo).
+
+**TTS: SAPI5 do Windows, via [`pyttsx3`](https://github.com/nateshmbhat/pyttsx3)**
+(`services/sapi_tts_provider.py`). SAPI5 já vem instalado no Windows —
+**nenhum modelo é baixado** para TTS. `pyttsx3` é só uma camada Python fina
+sobre ele (MPL-2.0, mantido, wheels simples). A voz é escolhida
+automaticamente: se o Windows tiver uma voz pt-BR instalada, ela é usada
+(neste ambiente de desenvolvimento, foi detectada e testada de verdade a
+voz `Microsoft Maria` — pt-BR nativa do Windows); senão, cai para a voz
+padrão do sistema. Nada de clonagem de voz nem imitação de personagem —
+só a síntese padrão do SAPI5.
+
+**Microfone: [`sounddevice`](https://python-sounddevice.readthedocs.io/)**
+(MIT, wraps PortAudio, wheel do Windows já traz o binário). Usado só dentro
+de `VoskSTTProvider` — nenhum outro módulo importa `sounddevice`.
+
+### Modelo do Vosk — nunca baixado automaticamente
+
+O JARVIS **não baixa nenhum modelo sozinho**. `services/stt_service.py`
+procura um modelo em `settings.stt_model_path` (por padrão
+`voice_models/vosk-model-small-pt/`, fora do Git — ver `.gitignore`); se não
+encontrar, o STT fica `UNAVAILABLE` e o botão de microfone do HUD aparece
+desabilitado, sem quebrar nada. Para habilitar STT de verdade:
+
+```powershell
+# ~50 MB, licença Apache 2.0, hospedado por alphacephei.com (mantenedores do Vosk)
+Invoke-WebRequest -Uri "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip" -OutFile "vosk-model-small-pt.zip"
+Expand-Archive -Path "vosk-model-small-pt.zip" -DestinationPath "voice_models"
+Rename-Item "voice_models\vosk-model-small-pt-0.3" "vosk-model-small-pt"
+Remove-Item "vosk-model-small-pt.zip"
+```
+
+(Ou aponte `JARVIS_STT_MODEL_PATH` para qualquer outro modelo Vosk já
+baixado.) Depois disso, reinicie o HUD — o botão de microfone liga sozinho
+assim que `voice_available` fica `true`.
+
+### Push-to-talk: clique, não pressionar-e-segurar
+
+Considerei as duas alternativas pedidas: pressionar-e-segurar
+(`onPressed`/`onReleased` no `MicButton`) vs. clique para começar/clique
+para parar. **Escolhi clique-para-alternar** — é a opção mais estável em
+Qt/QML: pressionar-e-segurar tem casos de borda reais (soltar o mouse fora
+do botão, perder o evento `onReleased` se a janela perder foco no meio do
+gesto, Alt+Tab durante o "segurar") que podem deixar o microfone "preso"
+ligado sem o usuário perceber — inaceitável dado o requisito de privacidade
+do microfone. Clique-para-alternar não tem esse risco (dois eventos
+discretos e independentes) e funciona identicamente pelo mouse ou pelo
+atalho `Ctrl+Space` (`Shortcut` do Qt dispara só no *press*, então também
+favorece um toggle sobre um "segurar").
+
+`Ctrl+Space` só funciona com a janela do JARVIS em foco — é um `Shortcut`
+do Qt, escopado à janela, não um hotkey global do Windows (nada escuta
+teclado fora do HUD, conforme pedido).
+
+### Privacidade do microfone
+
+- O HUD **nunca** liga o microfone sozinho — só em resposta a um clique (ou
+  `Ctrl+Space`) do usuário.
+- `MicButton.qml` mostra visualmente os três estados possíveis (parado,
+  gravando — violeta pulsando —, transcrevendo); o núcleo central também
+  muda de cor (violeta) durante `LISTENING`, então é impossível não notar.
+- **Nenhum áudio é salvo em disco, nem temporariamente.** `VoskSTTProvider`
+  processa os frames PCM em streaming, direto da callback do PortAudio para
+  o reconhecedor do Vosk (`KaldiRecognizer.AcceptWaveform`) — nada é escrito
+  em arquivo, nem mesmo um `.wav` temporário. Ver `services/vosk_stt_provider.py`.
+- Cancelar (`cancel_listening`) descarta o áudio sem transcrever.
+
+### Transcrição → campo de texto (nunca envio automático)
+
+Quando a transcrição termina, o texto reconhecido cai em
+`InputBar.insertTranscription()` — preenche (ou complementa, se já havia
+algo digitado) o campo de entrada, para o usuário conferir/editar antes de
+enviar. **Nada é enviado à IA automaticamente.** Uma futura opção de
+auto-send está deliberadamente fora de escopo aqui — não existe nem
+desligada, para não sugerir um comportamento que ainda não foi decidido.
+
+### Fala automática da resposta (`voice_output_enabled`)
+
+Desligada por padrão (`Settings.voice_output_enabled = False`, ou
+`JARVIS_VOICE_OUTPUT=1` para ligar por padrão). O controle "OUTPUT ON/OFF"
+no `StatusPanel` liga/desliga em runtime
+(`JarvisApplication.set_voice_output_enabled()`). Quando ligada, toda
+resposta bem-sucedida (`response.completed`) é falada — hoje isso inclui
+tanto uma resposta real do Claude (quando configurado) quanto o texto
+padrão do fallback ("O serviço de inteligência ainda não está
+configurado...", já que ele também é uma "resposta" da perspectiva da
+Application Layer). Nenhum traceback ou mensagem técnica é falado — os
+textos que chegam ao TTS são sempre os mesmos que já aparecem no chat.
+
+Durante `SPEAKING`, o botão de enviar do `InputBar` vira `■` (mesmo padrão
+visual do cancelamento de chat) e chama `JarvisApplication.stop_speaking()`
+de verdade — testado ponta a ponta neste ambiente (ver "Validação manual"
+no relatório da versão): interromper no meio de uma fala longa corta o
+áudio em menos de 1 segundo.
+
+### Nível de voz (waveform)
+
+`VoskSTTProvider` calcula um RMS simples (`array` da stdlib — não `numpy`
+nem `audioop`, removido no Python 3.13+) a cada callback do PortAudio
+(blocos de 50ms → ~20 updates/s, dentro do orçamento de "algumas dezenas
+por segundo" pedido) e entrega isso via `voice.level` no EventBus. O
+`Waveform.qml` (barras reagindo ao nível) e o próprio `JarvisCore` (halo
+pulsando com o nível) só aparecem/reagem durante `LISTENING`, com dado
+real — nunca simulam atividade sem áudio de verdade (por isso não há
+"waveform" durante `SPEAKING`: o SAPI5 não expõe amplitude real da fala).
+
+### Eventos
+
+`voice.listening.started/.stopped`, `voice.transcription.started/.completed/.failed`,
+`voice.speaking.started/.stopped/.failed`, `voice.level` — todos emitidos
+por `VoiceService` no `EventBus` interno e relayados como `AppEvent` por
+`JarvisApplication`, exatamente como `state.changed`/`ai.connected` já
+funcionavam. O Bridge nunca faz polling para nenhum deles.
+
+### Erros
+
+`AppErrorCode.MICROPHONE_UNAVAILABLE`, `STT_NOT_READY`, `TTS_UNAVAILABLE`,
+`VOICE_CANCELLED` — sempre mensagens amigáveis (nunca traceback), exibidas
+no HUD pelo mesmo mecanismo já usado para `JARVIS_BUSY` (`busyHint` em
+`Main.qml`, agora também escutando `voiceErrorRaised`).
+
+### Voz e permissões — princípio de segurança
+
+Voz **nunca** dá autoridade adicional. Uma frase transcrita é só texto —
+segue exatamente o mesmo caminho de qualquer mensagem digitada
+(`JarvisApplication.send_message()`), e nenhuma tool real existe ainda para
+executar. Quando tools reais existirem, o fluxo continua sendo
+`voz → intenção → tool → PermissionService → confirmação do usuário` — a
+mesma fundação de permissões do v0.4, não substituída nem contornada pela
+voz (ver `docs/architecture.md`).
+
 ## Modo de desenvolvimento (`devMode`)
 
 Quando `JARVIS_DEV=1` está no ambiente (mesma flag que já existia em
@@ -204,9 +373,12 @@ para o usuário final:
 | `Ctrl+Shift+3` | Simula estado `ERROR` |
 | `Ctrl+Shift+4` | Dispara um pedido de permissão de teste |
 | `Ctrl+Shift+5` | Simula estado `WAITING_CONFIRMATION` |
+| `Ctrl+Shift+6` | Simula estado `LISTENING` (com um `voiceLevel` fixo de teste) |
+| `Ctrl+Shift+7` | Simula estado `SPEAKING` |
 
-Nenhuma resposta de IA é simulada — só estados visuais e o overlay de
-permissão, para poder validar a interface sem depender de uma sessão real.
+Nenhuma resposta de IA é simulada, e nenhuma transcrição/fala falsa é
+gerada — só estados visuais e o overlay de permissão, para poder validar a
+interface sem depender de uma sessão real nem de microfone/TTS reais.
 
 `ChatPanel.qml` também ganhou uma `property bool pending` (ligada a
 `bridge.busy` em `Main.qml`): enquanto uma resposta está em andamento,
@@ -217,25 +389,48 @@ do backend, não um spinner genérico nem texto de resposta inventado.
 
 - `tests/test_bridge.py` — offline, com `JarvisApplication` real sobre
   `FakeAIService` (mesmos fakes usados pelo backend). Sem GUI, sem QML.
-  Inclui `test_dev_mode_defaults_to_false` (v0.6).
-- `tests/test_message_model.py` (novo no v0.6) — `MessageListModel` isolado:
-  roles, `sync()` incremental/reset, `update_content()`.
+  Inclui `test_dev_mode_defaults_to_false`.
+- `tests/test_message_model.py` — `MessageListModel` isolado: roles,
+  `sync()` incremental/reset, `update_content()`.
 - `tests/test_qml_smoke.py` — confirma que `Main.qml` carrega sem
-  erros/warnings, com `QT_QPA_PLATFORM=offscreen`. v0.6 adiciona dois testes
+  erros/warnings, com `QT_QPA_PLATFORM=offscreen`. Inclui dois testes
   específicos do `PermissionOverlay` (localizado via `objectName:
   "permissionOverlay"`): oculto sem pedido pendente, visível e com os dados
   certos quando existe um. **Não** testa pixels — isso é responsabilidade de
   inspeção visual manual.
+- `tests/test_voice_service.py` (novo no v0.7) — `VoiceService` isolado,
+  com `FakeSTTService`/`FakeTTSService` (`tests/fakes.py`): disponibilidade,
+  push-to-talk, transcrição (sucesso/falha), fala (sucesso/falha),
+  cancelamento (inclusive interrompendo uma fala em andamento), shutdown.
+  Nenhum microfone ou engine de voz real é tocado.
+- `tests/test_application.py` (classes `ApplicationVoice*`, novo no v0.7) —
+  a mesma cobertura, mas pela API pública de `JarvisApplication`: estados
+  `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, transcrição chegando como
+  `AppEvent` (nunca enviada à IA sozinha), fala automática condicionada a
+  `voice_output_enabled`, guardas de concorrência com o chat, ausência de
+  microfone não quebrando o chat normal, shutdown limpo durante
+  listening/speaking.
 
 ## Limitações desta versão
 
-- Sem streaming real (o contrato de eventos já suporta; `MessageListModel.update_content()`
-  já existe como ponto de extensão — falta só ligar `response.delta` quando
-  o Agent SDK real estiver conectado).
-- Sem voz, sem MCP, sem ferramentas reais, sem Ruflo — tudo isso continua
-  planejado, não implementado.
+- STT exige baixar manualmente o modelo Vosk (ver seção "Voz" acima) — sem
+  ele, o botão de microfone fica desabilitado.
+- Sem wake word / escuta permanente (só push-to-talk, de propósito nesta
+  etapa) e sem hotkey global (`Ctrl+Space` só funciona com a janela em foco).
+- A fala automática (`voice_output_enabled`) já funciona de ponta a ponta,
+  mas como o Claude real ainda não está ativado, o que é falado hoje é
+  sempre o texto de fallback/erro amigável, nunca uma resposta inteligente
+  de verdade — isso muda no v0.8.
+- Sem streaming real de texto (o contrato de eventos já suporta;
+  `MessageListModel.update_content()` já existe como ponto de extensão —
+  falta só ligar `response.delta` quando o Agent SDK real estiver conectado).
+- Sem MCP, sem ferramentas reais, sem Ruflo — tudo isso continua planejado,
+  não implementado.
 - Sem tela de configurações, sem temas alternativos, sem persistência de
-  janela (posição/tamanho não são lembrados entre execuções).
+  janela (posição/tamanho não são lembrados entre execuções), sem seleção
+  de dispositivo de microfone/voz na UI (usa sempre o padrão do sistema —
+  a estrutura já suporta trocar isso depois, ver `Settings.tts_voice`).
 - Validação visual "de verdade" (like, olhar para a tela e avaliar
-  acabamento) precisa ser feita por quem está rodando — os testes
-  automatizados cobrem comportamento e ausência de erros, não estética.
+  acabamento, ou realmente falar no microfone) precisa ser feita por quem
+  está rodando — os testes automatizados cobrem comportamento e ausência de
+  erros com fakes, não hardware real nem estética.

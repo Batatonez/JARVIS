@@ -60,6 +60,17 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+3"; enabled: bridge.devMode; onActivated: bridge.simulateState("error") }
     Shortcut { sequence: "Ctrl+Shift+4"; enabled: bridge.devMode; onActivated: bridge.simulateState("permission") }
     Shortcut { sequence: "Ctrl+Shift+5"; enabled: bridge.devMode; onActivated: bridge.simulateState("waiting_confirmation") }
+    Shortcut { sequence: "Ctrl+Shift+6"; enabled: bridge.devMode; onActivated: bridge.simulateState("listening") }
+    Shortcut { sequence: "Ctrl+Shift+7"; enabled: bridge.devMode; onActivated: bridge.simulateState("speaking") }
+
+    // Push-to-talk por clique: Ctrl+Space liga/desliga o microfone — só
+    // funciona com a janela do JARVIS em foco (Shortcut do Qt é por janela,
+    // não um hotkey global do Windows; ver frontend/README.md, seção Voz).
+    Shortcut {
+        sequence: "Ctrl+Space"
+        enabled: bridge.voiceAvailable || bridge.jarvisState === "listening" || bridge.jarvisState === "processing_speech"
+        onActivated: bridge.toggleListening()
+    }
 
     // ------------------------------------------------------------------
     // Fundo: quase preto, com vinheta muito sutil e grid discreto.
@@ -140,6 +151,7 @@ Window {
                     state: bridge.jarvisState
                     aiConfigured: bridge.aiConfigured
                     aiSessionActive: bridge.aiSessionActive
+                    voiceLevel: bridge.voiceLevel
                 }
 
                 Column {
@@ -203,6 +215,10 @@ Window {
             aiConfigured: bridge.aiConfigured
             aiSessionActive: bridge.aiSessionActive
             aiBackend: bridge.aiBackend
+            voiceAvailable: bridge.voiceAvailable
+            ttsReady: bridge.ttsReady
+            voiceOutputEnabled: bridge.voiceOutputEnabled
+            onVoiceOutputToggleRequested: bridge.setVoiceOutputEnabled(!bridge.voiceOutputEnabled)
             opacity: window.statusBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
         }
@@ -222,8 +238,24 @@ Window {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 busy: bridge.busy
+                voiceState: bridge.jarvisState
+                voiceAvailable: bridge.voiceAvailable
+                speaking: bridge.jarvisState === "speaking"
                 onSendRequested: (text) => bridge.sendMessage(text)
                 onCancelRequested: bridge.cancelCurrentRequest()
+                onMicToggleRequested: bridge.toggleListening()
+                onStopSpeakingRequested: bridge.stopSpeaking()
+            }
+
+            // Nível de voz real do microfone — só existe enquanto LISTENING
+            // (nunca simulado; ver Waveform.qml).
+            Waveform {
+                anchors.bottom: inputBar.top
+                anchors.bottomMargin: 10
+                anchors.right: inputBar.right
+                anchors.rightMargin: 56
+                visible: bridge.jarvisState === "listening"
+                level: bridge.voiceLevel
             }
 
             Text {
@@ -259,6 +291,14 @@ Window {
             busyHint.text = message
             busyHint.opacity = 1
             busyHintTimer.restart()
+        }
+        function onVoiceErrorRaised(message) {
+            busyHint.text = message
+            busyHint.opacity = 1
+            busyHintTimer.restart()
+        }
+        function onTranscriptionReady(text) {
+            inputBar.insertTranscription(text)
         }
     }
 

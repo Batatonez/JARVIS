@@ -44,18 +44,26 @@ from app.models import (
     StatusSnapshot,
 )
 from app.permissions import PermissionService
+from app.state import JarvisState
 from app.status import build_status_snapshot
+from services.stt_service import STTUnavailableError
+from services.tts_service import TTSUnavailableError
+from services.voice_service import VoiceService
 
 logger = logging.getLogger(__name__)
 
 
 class JarvisApplication:
-    def __init__(self, core: JarvisCore) -> None:
+    def __init__(self, core: JarvisCore, *, voice_service: VoiceService | None = None) -> None:
         self._core = core
         self._conversation = Conversation(max_messages=core.settings.max_conversation_messages)
         self._current_request_task: asyncio.Task[str] | None = None
         self._subscribers: list[asyncio.Queue[AppEvent]] = []
         self.permissions = PermissionService(core.event_bus)
+        # VoiceService vive aqui, não em JarvisCore — é um frontend-facing
+        # capability opcional (push-to-talk, fala), não parte do raciocínio
+        # do Core/Orchestrator (ver docs/architecture.md, Voice Foundation).
+        self.voice = voice_service or VoiceService(core.settings, core.event_bus)
 
         for event_name in (
             "jarvis.started",
@@ -65,6 +73,15 @@ class JarvisApplication:
             "ai.disconnected",
             "permission.requested",
             "permission.resolved",
+            "voice.listening.started",
+            "voice.listening.stopped",
+            "voice.transcription.started",
+            "voice.transcription.completed",
+            "voice.transcription.failed",
+            "voice.speaking.started",
+            "voice.speaking.stopped",
+            "voice.speaking.failed",
+            "voice.level",
         ):
             core.event_bus.subscribe(event_name, self._make_relay(event_name))
 
@@ -85,6 +102,7 @@ class JarvisApplication:
         logger.info("Application encerrando.")
         self._emit("jarvis.stopping")
         await self.cancel_current_request()
+        await self.voice.shutdown()
         await self._core.stop()
 
     # ------------------------------------------------------------------
@@ -106,6 +124,12 @@ class JarvisApplication:
             return AssistantResponse(
                 status=ResponseStatus.ERROR,
                 error=AppError(AppErrorCode.JARVIS_BUSY, "O JARVIS está processando outra mensagem. Aguarde."),
+            )
+        if self.voice.listening or self.voice.speaking:
+            logger.info("Mensagem rejeitada: voz em uso (escutando ou falando).")
+            return AssistantResponse(
+                status=ResponseStatus.ERROR,
+                error=AppError(AppErrorCode.JARVIS_BUSY, "O JARVIS está com o microfone/voz em uso no momento."),
             )
 
         self._conversation.add(MessageRole.USER, text)
@@ -154,6 +178,10 @@ class JarvisApplication:
                 )
             assistant_message = self._conversation.add(MessageRole.ASSISTANT, raw_reply)
             self._emit("response.completed", {"message_id": assistant_message.id})
+            if self.voice.voice_output_enabled and self.voice.tts_ready:
+                # Fala a resposta real já produzida — nunca inventa texto.
+                # Fire-and-forget: não atrasa o retorno de send_message().
+                asyncio.ensure_future(self.speak(raw_reply))
             return AssistantResponse(
                 status=ResponseStatus.SUCCESS, message_id=assistant_message.id, content=raw_reply
             )
@@ -183,6 +211,89 @@ class JarvisApplication:
         await self._core.restart_ai_session()
         self._emit("conversation.started")
         logger.info("Nova conversa iniciada.")
+
+    # ------------------------------------------------------------------
+    # Voz (v0.7 — push-to-talk + fala; ver docs/architecture.md)
+    #
+    # O resultado da transcrição NUNCA é enviado à IA automaticamente e
+    # NUNCA aciona nenhuma ação/ferramenta diretamente — chega só como texto
+    # via `voice.transcription.completed`, para o frontend decidir (ver
+    # `docs/architecture.md`, seção "Voz e permissões"). Erros de voz nunca
+    # levantam exceção para quem chama: viram eventos `voice.*.failed` (o
+    # `AppError` de retorno cobre só as rejeições síncronas, como microfone
+    # ausente ou JARVIS ocupado, que acontecem antes de qualquer evento).
+    # ------------------------------------------------------------------
+
+    async def start_listening(self) -> AppError | None:
+        """Começa a capturar áudio do microfone (push-to-talk). Retorna um
+        `AppError` estruturado se não for possível começar; `None` em
+        sucesso (o estado passa a `LISTENING`, visível via `state.changed`)."""
+        if self._current_request_task is not None and not self._current_request_task.done():
+            return AppError(AppErrorCode.JARVIS_BUSY, "O JARVIS está processando outra mensagem. Aguarde.")
+        if self.voice.listening or self.voice.speaking:
+            return AppError(AppErrorCode.JARVIS_BUSY, "O microfone/voz já está em uso.")
+        if not self.voice.voice_available:
+            return AppError(
+                AppErrorCode.MICROPHONE_UNAVAILABLE, "Microfone ou reconhecimento de fala não está disponível."
+            )
+
+        self._core.set_state(JarvisState.LISTENING)
+        try:
+            await self.voice.start_listening()
+        except STTUnavailableError as exc:
+            self._core.set_state(JarvisState.IDLE)
+            return AppError(AppErrorCode.MICROPHONE_UNAVAILABLE, str(exc))
+        return None
+
+    async def stop_listening_and_transcribe(self) -> None:
+        """Para a captura e tenta transcrever. O texto (ou erro) chega via
+        eventos (`voice.transcription.completed`/`.failed`), não pelo
+        retorno — assim qualquer frontend assistindo aos eventos vê o
+        resultado, não só quem chamou este método."""
+        if not self.voice.listening:
+            return
+        self._core.set_state(JarvisState.PROCESSING_SPEECH)
+        try:
+            await self.voice.stop_and_transcribe()
+        except STTUnavailableError:
+            pass  # já relatado via voice.transcription.failed
+        finally:
+            self._core.set_state(JarvisState.IDLE)
+
+    async def cancel_listening(self) -> None:
+        """Cancela a captura em andamento sem transcrever (descarta o áudio)."""
+        if not self.voice.listening:
+            return
+        await self.voice.cancel_listening()
+        self._core.set_state(JarvisState.IDLE)
+
+    async def speak(self, text: str) -> AppError | None:
+        """Fala um texto via TTS (usado automaticamente após uma resposta da
+        IA quando `voice_output_enabled`, e disponível para o frontend
+        acionar diretamente). Retorna um `AppError` se a síntese de voz não
+        estiver disponível ou falhar."""
+        if not self.voice.tts_ready:
+            return AppError(AppErrorCode.TTS_UNAVAILABLE, "Síntese de voz não está disponível.")
+        self._core.set_state(JarvisState.SPEAKING)
+        try:
+            await self.voice.speak(text)
+        except TTSUnavailableError as exc:
+            self._core.set_state(JarvisState.IDLE)
+            return AppError(AppErrorCode.TTS_UNAVAILABLE, str(exc))
+        self._core.set_state(JarvisState.IDLE)
+        return None
+
+    async def stop_speaking(self) -> None:
+        """Interrompe a fala em andamento (controle STOP/mute do HUD)."""
+        await self.voice.stop_speaking()
+        if self._core.state is JarvisState.SPEAKING:
+            self._core.set_state(JarvisState.IDLE)
+
+    def set_voice_output_enabled(self, enabled: bool) -> None:
+        """Liga/desliga a fala automática da resposta da IA. Desligado por
+        padrão (`Settings.voice_output_enabled`); o HUD chama isto a partir
+        do controle "VOICE OUTPUT ON/OFF"."""
+        self.voice.voice_output_enabled = enabled
 
     # ------------------------------------------------------------------
     # Terminal (primeiro frontend)
@@ -221,7 +332,7 @@ class JarvisApplication:
     def get_status(self) -> StatusSnapshot:
         busy = self._current_request_task is not None and not self._current_request_task.done()
         return build_status_snapshot(
-            self._core, busy=busy, active_conversation=bool(self._conversation.messages)
+            self._core, busy=busy, active_conversation=bool(self._conversation.messages), voice=self.voice
         )
 
     def get_messages(self) -> list[Message]:

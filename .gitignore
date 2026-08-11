@@ -52,6 +52,10 @@ temp/
 *.sqlite3
 *.db
 
+# --- Modelos de voz locais (v0.7) — nunca versionados; ver
+# frontend/README.md para o comando de download manual do modelo Vosk. ---
+voice_models/
+
 # --- IDE / editores ---
 .vscode/
 .idea/

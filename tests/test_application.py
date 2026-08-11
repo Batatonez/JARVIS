@@ -13,8 +13,9 @@ from app.commands import JarvisExit
 from app.models import AppErrorCode, AppEvent, MessageRole, ResponseStatus
 from app.state import JarvisState
 from services.ai_service import AIServiceUnavailableError
-from tests.fakes import FakeAIService
-from tests.helpers import build_isolated_application
+from services.voice_service import VoiceService
+from tests.fakes import FakeAIService, FakeSTTService, FakeTTSService
+from tests.helpers import build_isolated_application, build_isolated_core
 
 
 class ApplicationLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -489,6 +490,262 @@ class NoSdkLeakageTests(unittest.IsolatedAsyncioTestCase):
                 module.startswith("claude_agent_sdk"),
                 f"{obj!r} veio de {module}, um tipo do Claude Agent SDK vazou para o consumidor.",
             )
+
+
+def _build_voice_app(tmp_path: Path, *, ai_service=None, stt=None, tts=None) -> JarvisApplication:
+    """Monta uma JarvisApplication com STT/TTS fakes explícitos (nunca
+    microfone/engine real) sobre o mesmo EventBus do Core — necessário para
+    controlar precisamente disponibilidade/transcrição/fala nos testes."""
+    core = build_isolated_core(tmp_path, ai_service=ai_service)
+    voice = VoiceService(
+        core.settings,
+        core.event_bus,
+        stt=stt if stt is not None else FakeSTTService(),
+        tts=tts if tts is not None else FakeTTSService(),
+    )
+    return JarvisApplication(core, voice_service=voice)
+
+
+class ApplicationVoiceListeningTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    async def test_start_listening_rejects_when_voice_unavailable(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name), stt=FakeSTTService(available=False))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        error = await app.start_listening()
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, AppErrorCode.MICROPHONE_UNAVAILABLE)
+        self.assertEqual(app.get_status().state, "idle")
+
+    async def test_start_listening_sets_core_state_to_listening(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        error = await app.start_listening()
+
+        self.assertIsNone(error)
+        self.assertEqual(app.get_status().state, "listening")
+        self.assertTrue(app.get_status().voice_input_active)
+
+    async def test_start_listening_rejects_while_chat_request_in_flight(self) -> None:
+        ai = FakeAIService(available=True, delay=1.0)
+        app = _build_voice_app(Path(self._tmp.name), ai_service=ai)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        asyncio.ensure_future(app.send_message("mensagem lenta"))
+        await asyncio.sleep(0.01)
+
+        error = await app.start_listening()
+
+        self.assertEqual(error.code, AppErrorCode.JARVIS_BUSY)
+
+    async def test_stop_listening_and_transcribe_emits_completed_event_with_text(self) -> None:
+        stt = FakeSTTService(transcript="olá jarvis, tudo bem?")
+        app = _build_voice_app(Path(self._tmp.name), stt=stt)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        queue = app.subscribe()
+        await app.start_listening()
+
+        await app.stop_listening_and_transcribe()
+
+        self.assertEqual(app.get_status().state, "idle")
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        types = [e.type for e in events]
+        self.assertIn("voice.transcription.completed", types)
+        completed = next(e for e in events if e.type == "voice.transcription.completed")
+        self.assertEqual(completed.payload["text"], "olá jarvis, tudo bem?")
+
+    async def test_transcription_is_never_sent_to_ai_automatically(self) -> None:
+        ai = FakeAIService(available=True, reply="não devia ser chamado")
+        stt = FakeSTTService(transcript="olá jarvis")
+        app = _build_voice_app(Path(self._tmp.name), ai_service=ai, stt=stt)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        await app.start_listening()
+
+        await app.stop_listening_and_transcribe()
+
+        self.assertEqual(ai.asked_messages, [])
+        self.assertEqual(app.get_messages(), [])
+
+    async def test_stop_listening_and_transcribe_failure_does_not_raise(self) -> None:
+        stt = FakeSTTService(fail_transcription=True)
+        app = _build_voice_app(Path(self._tmp.name), stt=stt)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        await app.start_listening()
+
+        await app.stop_listening_and_transcribe()  # não deve levantar
+
+        self.assertEqual(app.get_status().state, "idle")
+
+    async def test_cancel_listening_returns_to_idle_without_transcription(self) -> None:
+        stt = FakeSTTService(transcript="não deveria transcrever")
+        app = _build_voice_app(Path(self._tmp.name), stt=stt)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        await app.start_listening()
+
+        await app.cancel_listening()
+
+        self.assertEqual(app.get_status().state, "idle")
+        self.assertEqual(stt.cancel_calls, 1)
+
+    async def test_send_message_rejected_while_listening(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name), ai_service=FakeAIService(available=True))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        await app.start_listening()
+
+        response = await app.send_message("oi")
+
+        self.assertEqual(response.error.code, AppErrorCode.JARVIS_BUSY)
+
+    async def test_absence_of_microphone_does_not_break_normal_chat(self) -> None:
+        # Configuração padrão de build_isolated_application: voz totalmente
+        # indisponível — o chat de texto continua funcionando normalmente.
+        app = build_isolated_application(Path(self._tmp.name), ai_service=FakeAIService(reply="ok"))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        response = await app.send_message("oi")
+
+        self.assertEqual(response.status, ResponseStatus.SUCCESS)
+        status = app.get_status()
+        self.assertFalse(status.voice_available)
+        self.assertFalse(status.microphone_available)
+
+
+class ApplicationVoiceSpeakingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    async def test_speak_returns_error_when_tts_unavailable(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name), tts=FakeTTSService(available=False))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        error = await app.speak("olá")
+
+        self.assertEqual(error.code, AppErrorCode.TTS_UNAVAILABLE)
+
+    async def test_speak_sets_and_clears_speaking_state(self) -> None:
+        tts = FakeTTSService()
+        app = _build_voice_app(Path(self._tmp.name), tts=tts)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        error = await app.speak("Olá, humano.")
+
+        self.assertIsNone(error)
+        self.assertEqual(app.get_status().state, "idle")
+        self.assertEqual(tts.spoken, ["Olá, humano."])
+
+    async def test_stop_speaking_interrupts_and_returns_to_idle(self) -> None:
+        tts = FakeTTSService(delay=5.0)
+        app = _build_voice_app(Path(self._tmp.name), tts=tts)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+        task = asyncio.ensure_future(app.speak("frase bem longa"))
+        await asyncio.sleep(0.01)
+        self.assertEqual(app.get_status().state, "speaking")
+
+        await app.stop_speaking()
+        await task
+
+        self.assertEqual(tts.stop_calls, 1)
+        self.assertEqual(app.get_status().state, "idle")
+
+    async def test_voice_output_enabled_triggers_auto_speak_on_response(self) -> None:
+        ai = FakeAIService(available=True, reply="Tudo certo por aqui.")
+        tts = FakeTTSService()
+        app = _build_voice_app(Path(self._tmp.name), ai_service=ai, tts=tts)
+        app.set_voice_output_enabled(True)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        await app.send_message("como você está?")
+        for _ in range(30):
+            if tts.spoken:
+                break
+            await asyncio.sleep(0.005)
+
+        self.assertEqual(tts.spoken, ["Tudo certo por aqui."])
+
+    async def test_voice_output_disabled_by_default_does_not_auto_speak(self) -> None:
+        ai = FakeAIService(available=True, reply="resposta")
+        tts = FakeTTSService()
+        app = _build_voice_app(Path(self._tmp.name), ai_service=ai, tts=tts)
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        await app.send_message("oi")
+        await asyncio.sleep(0.02)
+
+        self.assertEqual(tts.spoken, [])
+        self.assertFalse(app.get_status().voice_output_enabled)
+
+    async def test_set_voice_output_enabled_reflected_in_status(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        app.set_voice_output_enabled(True)
+
+        self.assertTrue(app.get_status().voice_output_enabled)
+
+
+class ApplicationVoiceStatusAndShutdownTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    async def test_status_reports_real_voice_capabilities(self) -> None:
+        app = _build_voice_app(Path(self._tmp.name))
+        await app.start()
+        self.addAsyncCleanup(app.stop)
+
+        status = app.get_status()
+
+        self.assertTrue(status.voice_available)
+        self.assertTrue(status.microphone_available)
+        self.assertTrue(status.stt_ready)
+        self.assertTrue(status.tts_ready)
+        self.assertFalse(status.voice_input_active)
+        self.assertFalse(status.voice_output_active)
+
+    async def test_shutdown_during_listening_is_clean(self) -> None:
+        stt = FakeSTTService()
+        app = _build_voice_app(Path(self._tmp.name), stt=stt)
+        await app.start()
+        await app.start_listening()
+
+        await app.stop()  # não deve levantar nem travar
+
+        self.assertEqual(stt.cancel_calls, 1)
+        self.assertFalse(app.get_status().running)
+
+    async def test_shutdown_during_speaking_is_clean(self) -> None:
+        tts = FakeTTSService(delay=5.0)
+        app = _build_voice_app(Path(self._tmp.name), tts=tts)
+        await app.start()
+        asyncio.ensure_future(app.speak("frase longa"))
+        await asyncio.sleep(0.01)
+
+        await app.stop()  # não deve levantar nem travar
+
+        self.assertEqual(tts.stop_calls, 1)
+        self.assertFalse(app.get_status().running)
 
 
 if __name__ == "__main__":

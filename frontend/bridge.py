@@ -34,6 +34,11 @@ _STATUS_EVENTS = frozenset(
         "response.started",
         "response.completed",
         "response.failed",
+        "voice.listening.started",
+        "voice.listening.stopped",
+        "voice.speaking.started",
+        "voice.speaking.stopped",
+        "voice.speaking.failed",
     }
 )
 # Eventos que implicam ressincronizar o histórico de mensagens.
@@ -53,9 +58,15 @@ class JarvisBridge(QObject):
     activeConversationChanged = Signal()
     pendingPermissionChanged = Signal()
     canCloseChanged = Signal()
+    voiceAvailableChanged = Signal()
+    ttsReadyChanged = Signal()
+    voiceOutputEnabledChanged = Signal()
+    voiceLevelChanged = Signal()
 
     busyRejected = Signal(str)
     internalErrorRaised = Signal(str)
+    transcriptionReady = Signal(str)
+    voiceErrorRaised = Signal(str)
 
     def __init__(self, application: JarvisApplication, *, dev_mode: bool = False, parent=None) -> None:
         super().__init__(parent)
@@ -73,6 +84,10 @@ class JarvisBridge(QObject):
         self._active_conversation = False
         self._pending_permission: dict | None = None
         self._can_close = False
+        self._voice_available = False
+        self._tts_ready = False
+        self._voice_output_enabled = False
+        self._voice_level = 0.0
 
         self._event_queue: asyncio.Queue | None = None
         self._event_task: asyncio.Task | None = None
@@ -116,6 +131,19 @@ class JarvisBridge(QObject):
             self._set_pending_permission()
         elif event.type == "permission.resolved":
             self._clear_pending_permission()
+        elif event.type == "voice.level":
+            level = float(event.payload.get("level", 0.0))
+            self._set_property("_voice_level", level, self.voiceLevelChanged)
+        elif event.type == "voice.transcription.completed":
+            text = str(event.payload.get("text", "")).strip()
+            if text:
+                self.transcriptionReady.emit(text)
+            else:
+                self.voiceErrorRaised.emit("Não entendi — tente novamente.")
+        elif event.type == "voice.transcription.failed":
+            self.voiceErrorRaised.emit(str(event.payload.get("error", "Falha ao transcrever.")))
+        elif event.type == "voice.speaking.failed":
+            self.voiceErrorRaised.emit(str(event.payload.get("error", "Falha ao falar.")))
 
     # ------------------------------------------------------------------
     # Sincronização de estado (sempre disparada por evento, nunca por timer)
@@ -131,6 +159,9 @@ class JarvisBridge(QObject):
         self._set_property("_ai_backend", snapshot.ai_backend, self.aiBackendChanged)
         self._set_property("_ai_session_active", snapshot.ai_session_active, self.aiSessionActiveChanged)
         self._set_property("_active_conversation", snapshot.active_conversation, self.activeConversationChanged)
+        self._set_property("_voice_available", snapshot.voice_available, self.voiceAvailableChanged)
+        self._set_property("_tts_ready", snapshot.tts_ready, self.ttsReadyChanged)
+        self._set_property("_voice_output_enabled", snapshot.voice_output_enabled, self.voiceOutputEnabledChanged)
 
     def _set_property(self, attr: str, value: object, signal: Signal) -> None:
         if getattr(self, attr) != value:
@@ -202,6 +233,22 @@ class JarvisBridge(QObject):
     def canClose(self) -> bool:
         return self._can_close
 
+    @Property(bool, notify=voiceAvailableChanged)
+    def voiceAvailable(self) -> bool:
+        return self._voice_available
+
+    @Property(bool, notify=ttsReadyChanged)
+    def ttsReady(self) -> bool:
+        return self._tts_ready
+
+    @Property(bool, notify=voiceOutputEnabledChanged)
+    def voiceOutputEnabled(self) -> bool:
+        return self._voice_output_enabled
+
+    @Property(float, notify=voiceLevelChanged)
+    def voiceLevel(self) -> float:
+        return self._voice_level
+
     @Property(bool, constant=True)
     def devMode(self) -> bool:
         return self._dev_mode
@@ -236,6 +283,34 @@ class JarvisBridge(QObject):
     @Slot()
     def newConversation(self) -> None:
         asyncio.ensure_future(self._app.new_conversation())
+
+    @Slot()
+    def toggleListening(self) -> None:
+        """Push-to-talk por clique: clique liga, clique de novo desliga e
+        transcreve. Um único slot, chamado pelo MicButton — o estado atual
+        (`jarvisState`) já diz qual dos dois deve acontecer."""
+        if self._state == "listening":
+            asyncio.ensure_future(self._app.stop_listening_and_transcribe())
+        else:
+            asyncio.ensure_future(self._start_listening())
+
+    async def _start_listening(self) -> None:
+        error = await self._app.start_listening()
+        if error is not None:
+            self.voiceErrorRaised.emit(error.message)
+
+    @Slot()
+    def cancelListening(self) -> None:
+        asyncio.ensure_future(self._app.cancel_listening())
+
+    @Slot()
+    def stopSpeaking(self) -> None:
+        asyncio.ensure_future(self._app.stop_speaking())
+
+    @Slot(bool)
+    def setVoiceOutputEnabled(self, enabled: bool) -> None:
+        self._app.set_voice_output_enabled(enabled)
+        self._set_property("_voice_output_enabled", enabled, self.voiceOutputEnabledChanged)
 
     @Slot(str)
     def approvePermission(self, request_id: str) -> None:
@@ -275,8 +350,10 @@ class JarvisBridge(QObject):
         if not self._dev_mode:
             return
         name = name.lower()
-        if name in ("idle", "thinking", "error", "waiting_confirmation"):
+        if name in ("idle", "thinking", "error", "waiting_confirmation", "listening", "speaking"):
             self._set_property("_state", name, self.stateChanged)
+            if name == "listening":
+                self._set_property("_voice_level", 0.6, self.voiceLevelChanged)
         elif name == "permission":
             self._app.permissions.request(
                 "restart_dev_server",

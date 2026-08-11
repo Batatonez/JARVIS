@@ -8,7 +8,7 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
-🚧 **JARVIS v0.6 — HUD Refinement / UX Foundation.** A interface gráfica (PySide6/QML) introduzida no v0.5 ganhou um refinamento visual profundo — contraste, núcleo de IA v2, layout, boot em etapas — sobre a mesma Application Layer (`JarvisApplication`) e o Core assíncrono com a arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`). O terminal continua funcionando à parte. Ainda sem voz, sem MCP e sem automação. Neste ambiente de desenvolvimento não há API key configurada, então o comportamento observável é o fallback seguro (`UnavailableAIService`) — o HUD mostra `AI OFFLINE` normalmente, sem travar e sem pedir credencial.
+🚧 **JARVIS v0.7 — Voice Foundation.** O HUD (PySide6/QML) ganhou entrada e saída de voz: push-to-talk com reconhecimento de fala offline (Vosk), síntese de fala offline (SAPI5/Windows), estados visuais dedicados e um `VoiceService` na Application Layer — tudo isso ainda sem ativar o Claude real. O terminal continua funcionando à parte, sem voz (é um recurso do HUD). Neste ambiente de desenvolvimento não há `ANTHROPIC_API_KEY` configurada, então o comportamento observável do chat continua sendo o fallback seguro (`UnavailableAIService`) — texto transcrito por voz cai no campo de entrada para revisão, nunca é enviado à IA sozinho. Ver [`frontend/README.md`](frontend/README.md), seção "Voz", para arquitetura, instalação e limitações.
 
 ## Como executar
 
@@ -45,12 +45,15 @@ python main.py        # ou: python -m frontend
 
 Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit` (alias `/quit`). No HUD, os mesmos conceitos existem como controles visuais (ver [`frontend/README.md`](frontend/README.md)).
 
+**Voz (opcional, só no HUD):** `requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`, `pyttsx3` — nenhuma exige GPU). A síntese de fala (TTS) funciona assim que essas dependências estiverem instaladas, usando vozes já existentes no Windows. O reconhecimento de fala (STT) exige, além disso, baixar manualmente um modelo Vosk (~50 MB, nunca feito automaticamente pelo JARVIS) — passo a passo em [`frontend/README.md`](frontend/README.md#voz-v07--push-to-talk). Sem o modelo, o botão de microfone do HUD fica desabilitado e o resto do JARVIS funciona normalmente por texto.
+
 ## Arquitetura geral
 
 ```
 JARVIS HUD (PySide6/QML) ou Terminal
   ↓
 JarvisApplication          (implementado — app/application.py — a API estável para qualquer frontend)
+  ├→ VoiceService           (implementado — v0.7 — services/voice_service.py — STT/TTS, só usado pelo HUD)
   ↓
 JarvisCore / Orchestrator   (implementado — app/core.py, app/orchestrator.py)
   ↓
@@ -84,25 +87,29 @@ Pastas ainda não implementadas contêm um `README.md` explicando sua finalidade
 
 ## Funcionalidades
 
-**Implementado (JARVIS v0.6 — HUD Refinement/UX Foundation, sobre a base do v0.5):**
-- HUD gráfico (PySide6/QML, `python -m frontend`): núcleo de IA v2 (anel segmentado, mais contraste, reage a idle/thinking/error/waiting_confirmation/offline), chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão (bug de visibilidade do v0.5 corrigido) — ver [`frontend/README.md`](frontend/README.md)
-- `JarvisApplication`: API estável para qualquer frontend — `send_message`, `cancel_current_request`, `new_conversation`, `get_status`, `get_messages`, `subscribe`/`events` (ver [`docs/application-api.md`](docs/application-api.md))
+**Implementado (JARVIS v0.7 — Voice Foundation, sobre a base do v0.5/v0.6):**
+- Voz no HUD: push-to-talk (clique liga/desliga, ou `Ctrl+Space`), reconhecimento de fala offline (Vosk), síntese de fala offline (SAPI5/Windows), estados `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, indicador de nível de voz real, botão de microfone e controle "OUTPUT ON/OFF" — ver [`frontend/README.md`](frontend/README.md)
+- `VoiceService` (`services/voice_service.py`), sob `JarvisApplication`: coordena STT/TTS, cancelamento, eventos `voice.*`
+- HUD gráfico (PySide6/QML, `python -m frontend`): núcleo de IA v2, chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão
+- `JarvisApplication`: API estável para qualquer frontend — `send_message`, `cancel_current_request`, `new_conversation`, `start_listening`/`stop_listening_and_transcribe`/`speak`, `get_status`, `get_messages`, `subscribe`/`events` (ver [`docs/application-api.md`](docs/application-api.md))
 - Histórico de conversa em runtime, separado da memória persistente
 - Stream de eventos em processo (sem WebSocket/servidor) — consumido tanto pelo HUD quanto preparado para futuros frontends
-- Política de concorrência clara (uma requisição por vez) e cancelamento real via `asyncio.Task`
-- Erros estruturados para a interface (`AI_UNAVAILABLE`, `JARVIS_BUSY`, `INTERNAL_ERROR`) — nunca texto para analisar
-- Fundação de permissões em memória (`app/permissions.py`), não conectada a ferramentas reais ainda
-- Núcleo executável por terminal, assíncrono (`python main.py`), consumindo a mesma Application Layer que o HUD
+- Política de concorrência clara (uma requisição por vez, incluindo voz) e cancelamento real via `asyncio.Task`
+- Erros estruturados para a interface (`AI_UNAVAILABLE`, `JARVIS_BUSY`, `INTERNAL_ERROR`, `MICROPHONE_UNAVAILABLE`, `STT_NOT_READY`, `TTS_UNAVAILABLE`, `VOICE_CANCELLED`) — nunca texto para analisar
+- Fundação de permissões em memória (`app/permissions.py`), não conectada a ferramentas reais ainda — voz nunca contorna essa fundação (ver `docs/architecture.md`)
+- Núcleo executável por terminal, assíncrono (`python main.py`), consumindo a mesma Application Layer que o HUD (sem voz — recurso do HUD)
 - Comandos: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit`
 - Leitura somente-leitura da memória (`profile.md`, `preferences.md`), entregue como contexto controlado à IA
 - Arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`, sessão contínua, ferramentas desabilitadas), condicionada a `ANTHROPIC_API_KEY`; sem a chave, fallback automático e seguro para `UnavailableAIService`
 
 **Preparado, mas não ativado:**
 - Conexão real com Claude e sessão de conversa contínua (arquitetura pronta e testada com fakes; não validada com IA real nesta etapa — sem API key neste ambiente)
+- Fluxo completo voz → Claude → voz (fala transcrita já cai no chat como texto revisável; a resposta inteligente de verdade depende do v0.8 ativar o Claude)
 - Streaming real token-a-token (contrato de eventos já existe; falta só ligar `response.delta`)
 
 **Planejado:**
-- Entrada por voz (STT) e resposta por voz (TTS)
+- API Claude real (v0.8)
+- Wake word / escuta permanente (v0.7 é só push-to-talk, de propósito)
 - Permissões interativas de verdade e ferramentas para interagir com o computador (READ / ACTION / DANGEROUS)
 - MCPs, Skills e Hooks do Claude Code
 - Subagentes especializados

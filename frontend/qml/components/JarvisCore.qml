@@ -14,6 +14,11 @@ Item {
     property bool aiConfigured: false
     property bool aiSessionActive: false
     property real size: 320
+    // Nível de áudio do microfone, 0.0-1.0, já throttled na origem
+    // (VoskSTTProvider, ~20 updates/s) — o Behavior abaixo suaviza o
+    // resultado para não parecer picotado entre updates.
+    property real voiceLevel: 0.0
+    Behavior on voiceLevel { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
 
     function play() { booted = true }      // dispara a animação de entrada
 
@@ -25,6 +30,11 @@ Item {
     // mexer neste componente.
     readonly property bool active: state === "thinking" || state === "working" || state === "listening" || state === "speaking"
     readonly property bool errored: state === "error"
+    // LISTENING tem assinatura visual própria (reage a voiceLevel de
+    // verdade, cor violeta) — não usa o pulso "active" genérico, para ficar
+    // imediatamente distinguível de THINKING.
+    readonly property bool listening: state === "listening"
+    readonly property bool speaking: state === "speaking"
     // Pulso mais rápido tanto em atividade real quanto em erro (alerta) —
     // waiting_confirmation fica de fora de propósito: é espera, não processamento.
     readonly property bool alert: active || errored
@@ -79,8 +89,10 @@ Item {
         height: width
         preferredRendererType: Shape.CurveRenderer
         antialiasing: true
-        opacity: 0.5 * core.dim
-        Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
+        // Durante LISTENING, reage ao nível de áudio real (pequenas ondas) —
+        // fora disso, segue a opacity padrão da camada.
+        opacity: core.listening ? (0.4 + core.voiceLevel * 0.5) * core.dim : 0.5 * core.dim
+        Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
         ShapePath {
             fillColor: "transparent"
             strokeColor: core.accent
@@ -239,9 +251,16 @@ Item {
         opacity: 0.35 * core.dim
         Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
 
-        SequentialAnimation on scale {
+        // Em LISTENING, a escala segue o nível de áudio real em vez do
+        // pulso "de respiração" genérico — é o que torna o núcleo
+        // visivelmente "vivo" ao som da própria voz do usuário.
+        property real pulseScale: 1.0
+        scale: core.listening ? (1.0 + core.voiceLevel * 0.5) : pulseScale
+        Behavior on scale { enabled: core.listening; NumberAnimation { duration: 70 } }
+
+        SequentialAnimation on pulseScale {
             loops: Animation.Infinite
-            running: core.booted
+            running: core.booted && !core.listening
             NumberAnimation { to: core.alert ? 1.2 : 1.08; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
             NumberAnimation { to: 1.0; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
         }
@@ -257,9 +276,13 @@ Item {
         opacity: 0.95 * core.dim
         Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
 
-        SequentialAnimation on scale {
+        property real pulseScale: 1.0
+        scale: core.listening ? (1.0 + core.voiceLevel * 0.3) : pulseScale
+        Behavior on scale { enabled: core.listening; NumberAnimation { duration: 70 } }
+
+        SequentialAnimation on pulseScale {
             loops: Animation.Infinite
-            running: core.booted
+            running: core.booted && !core.listening
             NumberAnimation { to: core.alert ? 1.12 : 1.05; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
             NumberAnimation { to: 1.0; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
         }

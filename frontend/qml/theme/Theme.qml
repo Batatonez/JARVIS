@@ -57,9 +57,14 @@ QtObject {
     readonly property int easingStandard: Easing.OutCubic
 
     // --- Helpers de estado ---
+    // v0.7: listening/speaking/processing_speech (voz) precisam ser
+    // reconhecíveis à primeira vista — em especial LISTENING não pode se
+    // confundir com THINKING (mesma cor ciano usada antes para os dois).
     function stateColor(state) {
         if (state === "error") return danger
         if (state === "waiting_confirmation") return warning
+        if (state === "listening") return violet
+        if (state === "speaking") return blue
         return cyan
     }
 

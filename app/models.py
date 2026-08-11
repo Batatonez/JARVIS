@@ -42,12 +42,25 @@ class AppErrorCode(Enum):
     AI_UNAVAILABLE = "ai_unavailable"
     JARVIS_BUSY = "jarvis_busy"
     INTERNAL_ERROR = "internal_error"
+    MICROPHONE_UNAVAILABLE = "microphone_unavailable"
+    STT_NOT_READY = "stt_not_ready"
+    TTS_UNAVAILABLE = "tts_unavailable"
+    VOICE_CANCELLED = "voice_cancelled"
 
 
 @dataclass(frozen=True)
 class AppError:
     code: AppErrorCode
     message: str
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    """Resultado de uma transcrição de voz (`VoiceService.stop_and_transcribe`).
+    O texto NUNCA é enviado à IA automaticamente — cabe ao frontend decidir
+    (ver `docs/architecture.md`, seção Voice Foundation)."""
+
+    text: str
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,15 @@ class StatusSnapshot:
     ai_backend: str
     ai_session_active: bool
     active_conversation: bool
+    # --- Voz (v0.7) — só dados reais; ausentes (False) quando não há
+    # VoiceService disponível para o chamador (ex.: /status do terminal). ---
+    voice_available: bool = False
+    microphone_available: bool = False
+    stt_ready: bool = False
+    tts_ready: bool = False
+    voice_input_active: bool = False
+    voice_output_active: bool = False
+    voice_output_enabled: bool = False
 
 
 @dataclass(frozen=True)

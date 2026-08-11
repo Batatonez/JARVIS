@@ -7,3 +7,23 @@ claude-agent-sdk>=0.2.134,<1.0.0
 # usada em frontend/launcher.py — nenhuma dependência extra de terceiros
 # para isso). O terminal (main.py) não depende de PySide6.
 PySide6>=6.9,<7.0
+
+# Voz (v0.7 — ver services/stt_service.py, services/tts_service.py,
+# frontend/README.md seção "Voz"). As três são leves (poucos MB somadas) —
+# o único download "grande" é o MODELO do Vosk, que o JARVIS nunca baixa
+# sozinho (ver frontend/README.md para o comando manual). Sem nenhuma delas
+# instalada, o JARVIS funciona normalmente por texto (voz é opcional).
+
+# Vosk — reconhecimento de fala (STT) 100% offline, Apache 2.0, Windows
+# suportado nativamente, sem GPU. https://alphacephei.com/vosk/
+vosk>=0.3.32,<0.4.0
+
+# sounddevice — captura do microfone (bindings do PortAudio), MIT,
+# traz o binário do PortAudio já embutido no wheel do Windows.
+# https://python-sounddevice.readthedocs.io/
+sounddevice>=0.4.6,<1.0.0
+
+# pyttsx3 — síntese de fala (TTS) via SAPI5, já nativo do Windows (nenhum
+# modelo/voz extra para baixar), MPL-2.0.
+# https://github.com/nateshmbhat/pyttsx3
+pyttsx3>=2.90,<3.0.0
