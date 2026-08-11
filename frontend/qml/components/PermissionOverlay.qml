@@ -13,17 +13,24 @@ Item {
     signal denied(string requestId)
 
     readonly property color riskColor: request ? Theme.riskColor(request.riskLevel) : Theme.cyan
+    // Bug do v0.5: `request !== null` é uma comparação estrita — um
+    // `Property("QVariant")` do Qt que devolve `None` do Python chega aqui
+    // como `undefined`, não `null`, e em JS `undefined !== null` é sempre
+    // `true`. Resultado: o overlay ficava com opacity 1 (visível, bloqueando
+    // clique) mesmo sem nenhum pedido pendente. Checagem "truthy" (`request
+    // ? ... : ...`) resolve para os dois casos (null e undefined).
+    readonly property bool hasRequest: !!request
 
     visible: opacity > 0
-    opacity: request !== null ? 1 : 0
+    opacity: hasRequest ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
 
-    focus: request !== null
+    focus: hasRequest
     Keys.onEscapePressed: if (overlay.request) overlay.denied(overlay.request.id)
 
     Rectangle {
         anchors.fill: parent
-        color: Qt.rgba(0.02, 0.03, 0.05, 0.7)
+        color: Qt.rgba(0.02, 0.03, 0.05, 0.78)
 
         MouseArea {
             // bloqueia cliques na interface por trás do overlay
@@ -38,9 +45,9 @@ Item {
         height: column.implicitHeight + Theme.spacingLg * 2
         radius: Theme.radiusLarge
         color: Theme.surfaceElevated
-        border.width: 1
+        border.width: 1.5
         border.color: overlay.riskColor
-        scale: overlay.request !== null ? 1 : 0.92
+        scale: overlay.hasRequest ? 1 : 0.92
         Behavior on scale { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutBack; easing.overshoot: 1.1 } }
 
         Column {
@@ -58,10 +65,11 @@ Item {
                     color: overlay.riskColor
                 }
                 Text {
-                    text: "SOLICITAÇÃO DE AÇÃO"
-                    color: Theme.textMuted
+                    text: "ACTION REQUEST"
+                    color: Theme.textSecondary
                     font.family: Theme.fontFamily
                     font.pixelSize: 11
+                    font.weight: Font.DemiBold
                     font.letterSpacing: Theme.letterSpacingLabel * 1.5
                 }
             }

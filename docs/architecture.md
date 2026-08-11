@@ -4,7 +4,7 @@
 
 ## Estado atual em uma frase
 
-**JARVIS Frontend/HUD v0.5**: a primeira interface gráfica real (PySide6/QML), consumindo a mesma Application Layer (`JarvisApplication`) que o terminal — histórico de conversa em runtime, stream de eventos, status consolidado, cancelamento, tudo sobre o `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` já existentes, sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje continua sendo o fallback seguro (`UnavailableAIService`) — o HUD mostra isso claramente (`AI OFFLINE`), sem fingir conexão.
+**JARVIS v0.6 — HUD Refinement/UX Foundation**: a interface gráfica (PySide6/QML) introduzida no v0.5 ganhou refinamento visual (contraste, núcleo de IA v2, layout, boot em etapas) e a correção de um bug real de visibilidade do `PermissionOverlay` — a arquitetura não mudou: continua consumindo a mesma Application Layer (`JarvisApplication`) que o terminal, sobre o `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` já existentes, sem nenhuma API key configurada neste ambiente de desenvolvimento. O comportamento padrão observável hoje continua sendo o fallback seguro (`UnavailableAIService`) — o HUD mostra isso claramente (`AI OFFLINE`), sem fingir conexão.
 
 ## Visão geral (arquitetura-alvo, planejada)
 
@@ -105,7 +105,7 @@ app/terminal.py (async)                    frontend/launcher.py + frontend/bridg
 
 ## Frontend/HUD — [`frontend/`](../frontend/)
 
-**Status: implementado (v0.5).** Segundo frontend, ao lado do terminal — não substitui `app/terminal.py`, os dois continuam existindo e ambos falam só com `JarvisApplication`. Documentação completa em [`frontend/README.md`](../frontend/README.md); aqui vai só o desenho arquitetural:
+**Status: implementado (v0.5, refinado visualmente no v0.6 — mesma arquitetura).** Segundo frontend, ao lado do terminal — não substitui `app/terminal.py`, os dois continuam existindo e ambos falam só com `JarvisApplication`. Documentação completa em [`frontend/README.md`](../frontend/README.md); aqui vai só o desenho arquitetural:
 
 ```
 JARVIS HUD (PySide6 / QML)
@@ -279,8 +279,9 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 
 ## O que já existe vs. o que é planejamento
 
-**IMPLEMENTADO NO v0.5:**
-- HUD gráfico (`frontend/`, PySide6/QML, `python -m frontend`) — núcleo de IA animado reagindo a estado real, chat, status, cancelamento, nova conversa, overlay de permissão preparado (ver seção "Frontend/HUD" acima e [`frontend/README.md`](../frontend/README.md))
+**IMPLEMENTADO NO v0.5/v0.6:**
+- HUD gráfico (`frontend/`, PySide6/QML, `python -m frontend`) — núcleo de IA v2 reagindo a estado real (idle/thinking/error/waiting_confirmation/offline), chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão (v0.6: bug de visibilidade corrigido) — ver seção "Frontend/HUD" acima e [`frontend/README.md`](../frontend/README.md)
+- `MessageListModel.update_content()` (v0.6) — ponto de extensão pronto para streaming futuro, não conectado a nenhum evento real ainda
 - `JarvisBridge` (`frontend/bridge.py`) — ponte fina, orientada a eventos (sem polling), entre QML e `JarvisApplication`
 - Application Layer (`JarvisApplication`, `app/application.py`) — fronteira estável entre Core e qualquer frontend (terminal e HUD)
 - Modelos de domínio sem dependência do Agent SDK (`app/models.py`): `Message`, `AssistantResponse`, `StatusSnapshot`, `AppEvent`, `PermissionRequest`, etc.

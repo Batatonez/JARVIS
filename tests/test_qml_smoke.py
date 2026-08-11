@@ -12,10 +12,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QUrl  # noqa: E402
+from PySide6.QtCore import QObject, QUrl  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 
+from app.models import RiskLevel  # noqa: E402
 from frontend.bridge import JarvisBridge  # noqa: E402
 from tests.helpers import build_isolated_application  # noqa: E402
 
@@ -43,6 +45,35 @@ class QmlSmokeTests(unittest.TestCase):
 
         self.assertEqual(self.warnings, [])
         self.assertEqual(len(self.engine.rootObjects()), 1)
+
+    def test_permission_overlay_hidden_when_no_pending_request(self) -> None:
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+
+        overlay = root.findChild(QObject, "permissionOverlay")
+        self.assertIsNotNone(overlay)
+        self.assertFalse(overlay.property("visible"))
+        self.assertIsNone(overlay.property("request"))
+
+    def test_permission_overlay_visible_with_pending_request(self) -> None:
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+        overlay = root.findChild(QObject, "permissionOverlay")
+
+        request = self._bridge._app.permissions.request("read_file", "Ler um arquivo", RiskLevel.READ)
+        self._bridge._set_pending_permission()
+        # `visible` depende da animação de opacity (Behavior, Theme.durationNormal
+        # = 220ms) terminar, não só de processar um evento — dá tempo real ao
+        # driver de animação do Qt.
+        QTest.qWait(350)
+
+        self.assertTrue(overlay.property("hasRequest"))
+        self.assertTrue(overlay.property("visible"))
+        pending = overlay.property("request")
+        self.assertEqual(pending["id"], request.id)
+        self.assertEqual(pending["riskLevel"], "read")
+
+        self.assertEqual(self.warnings, [])
 
 
 if __name__ == "__main__":

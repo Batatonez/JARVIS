@@ -5,24 +5,30 @@ import QtQuick
 // hardcoded em outro QML — sempre referenciar Theme.*.
 QtObject {
     // --- Paleta ---
-    readonly property color background: "#06080D"
-    readonly property color surface: "#0A111A"
-    readonly property color surfaceElevated: "#0D1722"
+    // v0.6: fundo continua quase preto, mas superfícies e texto secundário
+    // ganharam contraste real — o v0.5 estava escuro demais em status,
+    // labels e placeholders.
+    readonly property color background: "#070A10"
+    readonly property color surface: "#0C1420"
+    readonly property color surfaceElevated: "#121D2C"
+    readonly property color surfacePanel: "#0F1826" // faixas discretas (status), entre surface e surfaceElevated
 
     readonly property color cyan: "#5CE1E6"
-    readonly property color blue: "#3B82F6"
-    readonly property color violet: "#8B5CF6"
+    readonly property color blue: "#4C8DFF"
+    readonly property color violet: "#9B6BFF"
 
-    readonly property color textPrimary: "#EAF6FF"
-    readonly property color textMuted: "#8297A8"
-    readonly property color textFaint: "#4E6072"
+    readonly property color textPrimary: "#F3F9FF"
+    readonly property color textSecondary: "#B7C8DB" // labels/valores que precisam ser lidos de relance
+    readonly property color textMuted: "#93A7BC"      // era #8297A8 — pouco legível sobre o fundo v0.5
+    readonly property color textFaint: "#6A7F93"      // era #4E6072 — timestamps/labels técnicos, ainda discreto mas legível
 
     readonly property color success: "#4ADE80"
     readonly property color warning: "#FBBF24"
-    readonly property color danger: "#FF5C73"
+    readonly property color danger: "#FF6B7F"
 
-    readonly property color borderSubtle: Qt.rgba(1, 1, 1, 0.07)
-    readonly property color borderFocus: Qt.rgba(0.361, 0.882, 0.902, 0.45) // cyan translúcido
+    readonly property color borderSubtle: Qt.rgba(1, 1, 1, 0.10)
+    readonly property color borderStrong: Qt.rgba(1, 1, 1, 0.16)
+    readonly property color borderFocus: Qt.rgba(0.361, 0.882, 0.902, 0.55) // cyan translúcido
 
     // --- Geometria ---
     readonly property int radiusSmall: 6
@@ -46,7 +52,7 @@ QtObject {
     readonly property int durationFast: 120
     readonly property int durationNormal: 220
     readonly property int durationSlow: 420
-    readonly property int durationBoot: 1200
+    readonly property int durationBoot: 900
 
     readonly property int easingStandard: Easing.OutCubic
 

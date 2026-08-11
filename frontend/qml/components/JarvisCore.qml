@@ -18,11 +18,20 @@ Item {
     function play() { booted = true }      // dispara a animação de entrada
 
     // --- Estado interno derivado ---
+    // idle | thinking | working | listening | speaking | waiting_confirmation | error
+    // são os únicos estados válidos hoje (app/state.py); `active`/`alert`
+    // abaixo já cobrem os que ainda não são produzidos em runtime (listening/
+    // speaking/working), então ligar esses estados no futuro não exige
+    // mexer neste componente.
     readonly property bool active: state === "thinking" || state === "working" || state === "listening" || state === "speaking"
     readonly property bool errored: state === "error"
+    // Pulso mais rápido tanto em atividade real quanto em erro (alerta) —
+    // waiting_confirmation fica de fora de propósito: é espera, não processamento.
+    readonly property bool alert: active || errored
     property color accent: Theme.stateColor(state)
-    // Offline nunca deve parecer "morto" — só um pouco mais discreto.
-    readonly property real dim: (aiConfigured && aiSessionActive) ? 1.0 : 0.68
+    // Offline nunca deve parecer "morto" — só um pouco mais discreto (v0.6:
+    // 0.72, era 0.68 — o núcleo ficava legível demais apagado no v0.5).
+    readonly property real dim: (aiConfigured && aiSessionActive) ? 1.0 : 0.72
     readonly property int ringSpeed: active ? 3200 : 13000
     property bool booted: false
 
@@ -41,9 +50,10 @@ Item {
     // ---------------------------------------------------------------
     Repeater {
         model: [
-            { scale: 1.85, opacity: 0.05 },
-            { scale: 1.5, opacity: 0.07 },
-            { scale: 1.18, opacity: 0.12 }
+            { scale: 2.1, opacity: 0.035 },
+            { scale: 1.7, opacity: 0.055 },
+            { scale: 1.4, opacity: 0.08 },
+            { scale: 1.16, opacity: 0.13 }
         ]
         delegate: Rectangle {
             required property var modelData
@@ -138,32 +148,47 @@ Item {
                 startAngle: 200; sweepAngle: 90
             }
         }
+        // Congela no erro ("segmentos interrompem movimento") em vez de um
+        // flash — retoma sozinho quando o estado sai de `error`.
         RotationAnimation on rotation {
             from: 0; to: -360
             duration: core.ringSpeed * 0.8
             loops: Animation.Infinite
-            running: core.booted
+            running: core.booted && !core.errored
         }
     }
 
     // ---------------------------------------------------------------
-    // Camada 3 — pequenas marcas radiais discretas.
+    // Camada 3 — anel segmentado (ticks discretos, como um dial de dados),
+    // girando devagar e numa velocidade própria — profundidade extra sem
+    // virar bagunça visual.
     // ---------------------------------------------------------------
-    Repeater {
-        model: 4
-        delegate: Item {
-            required property int index
-            anchors.fill: parent
-            rotation: index * 90 + 45
-            Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: parent.height * 0.015
-                width: 2
-                height: 10
-                radius: 1
-                color: core.accent
-                opacity: 0.28 * core.dim
-                Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+    Item {
+        id: segmentRing
+        anchors.fill: parent
+        opacity: core.dim
+        RotationAnimation on rotation {
+            from: 0; to: -360
+            duration: core.ringSpeed * 2.1
+            loops: Animation.Infinite
+            running: core.booted
+        }
+        Repeater {
+            model: 16
+            delegate: Item {
+                required property int index
+                anchors.fill: parent
+                rotation: index * (360 / 16)
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: parent.height * 0.02
+                    width: 1.4
+                    height: index % 4 === 0 ? 9 : 5
+                    radius: 0.7
+                    color: index % 8 === 4 ? Theme.violet : core.accent
+                    opacity: index % 4 === 0 ? 0.34 : 0.16
+                    Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+                }
             }
         }
     }
@@ -217,8 +242,8 @@ Item {
         SequentialAnimation on scale {
             loops: Animation.Infinite
             running: core.booted
-            NumberAnimation { to: core.active ? 1.18 : 1.06; duration: core.active ? 520 : 1900; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: core.active ? 520 : 1900; easing.type: Easing.InOutSine }
+            NumberAnimation { to: core.alert ? 1.2 : 1.08; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 1.0; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
         }
     }
 
@@ -235,8 +260,8 @@ Item {
         SequentialAnimation on scale {
             loops: Animation.Infinite
             running: core.booted
-            NumberAnimation { to: core.active ? 1.1 : 1.04; duration: core.active ? 520 : 1900; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: core.active ? 520 : 1900; easing.type: Easing.InOutSine }
+            NumberAnimation { to: core.alert ? 1.12 : 1.05; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 1.0; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
         }
     }
 

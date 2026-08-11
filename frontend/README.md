@@ -1,9 +1,15 @@
 # frontend/
 
-O HUD do JARVIS — a primeira interface gráfica real do projeto (v0.5).
-PySide6 (Qt for Python) + Qt Quick/QML. O terminal (`python main.py`,
+O HUD do JARVIS — interface gráfica real do projeto, introduzida no v0.5 e
+refinada visualmente no **v0.6 (HUD Refinement / UX Foundation)**. PySide6
+(Qt for Python) + Qt Quick/QML. O terminal (`python main.py`,
 `app/terminal.py`) continua existindo, separado e inalterado — este é um
 segundo frontend, não uma substituição.
+
+**v0.6 não muda a arquitetura do v0.5** (HUD → Bridge → JarvisApplication
+continua igual) — é refinamento visual/UX sobre a mesma base: contraste,
+núcleo v2, layout, boot em etapas, e a correção de um bug real do
+`PermissionOverlay` (ver seção "Permissões" abaixo).
 
 ## Como executar
 
@@ -58,6 +64,14 @@ incremental quando a lista só cresceu no final (caso comum: nova
 troca de mensagens) e reset completo quando encolhe/diverge (`/new`) —
 preserva posição de scroll e permite animação de entrada no delegate.
 
+**Preparação para streaming (v0.6, não ativada):** `update_content(id,
+content)` atualiza o texto de uma linha já existente in-place (emite
+`dataChanged` só do `ContentRole`, sem `beginResetModel`). Nada no backend
+chama isso ainda — `response.delta` não existe (ver `docs/application-api.md`)
+— é só o ponto de extensão pronto para quando streaming real existir: o
+Bridge poderia chamar `update_content()` a cada delta em vez de esperar a
+resposta completa. Coberto por `tests/test_message_model.py`.
+
 ### `frontend/launcher.py` — integração Qt + asyncio
 
 Usa **`PySide6.QtAsyncio`**, a integração oficial do Qt for Python
@@ -86,7 +100,7 @@ frontend/qml/
     ├── TitleBar.qml           barra de título própria (move/resize/min/max/close via API nativa do Qt)
     ├── WindowButton.qml       botão de controle de janela
     ├── JarvisCore.qml         núcleo animado — o elemento visual principal
-    ├── ChatPanel.qml          lista de conversa, scroll inteligente
+    ├── ChatPanel.qml          lista de conversa, scroll inteligente, indicador de resposta pendente
     ├── MessageItem.qml        uma mensagem (bloco discreto, não bubble)
     ├── InputBar.qml           entrada multiline, Enter envia, Shift+Enter quebra linha
     ├── StatusPanel.qml        faixa de status real (CORE/MEMORY/AI/SESSION)
@@ -98,35 +112,54 @@ frontend/qml/
 ### `Theme.qml`
 
 Nenhuma cor/espaçamento/duração é hardcoded fora daqui — sempre `Theme.*`.
-Paleta: grafite/azul profundo/ciano frio/branco, com violeta só como accent
-pontual (algumas partículas orbitais). Fonte: `Segoe UI Variable` com
-fallback automático do próprio Windows para `Segoe UI`.
+Paleta v0.6 (mais contraste que o v0.5, mesma direção): fundo quase preto
+com leve azul (`background #070A10`), superfícies azul-grafite
+(`surface`/`surfaceElevated`/`surfacePanel`), ciano frio (`cyan #5CE1E6`)
+como primária, azul elétrico (`blue #4C8DFF`) como secundária, violeta
+(`violet #9B6BFF`) só como accent pontual (partículas/segmentos). Texto:
+`textPrimary` quase branco levemente azulado, `textSecondary`/`textMuted`/
+`textFaint` — os três foram clareados em relação ao v0.5, que deixava
+status, placeholders e labels pouco legíveis sobre o fundo escuro. Fonte:
+`Segoe UI Variable` com fallback automático do próprio Windows para
+`Segoe UI`.
 
-### `JarvisCore.qml` — o núcleo (AI Core)
+### `JarvisCore.qml` — o núcleo (AI Core) v2
 
 O elemento visual central, desenhado inteiramente em QML (Qt Quick Shapes +
 `Rectangle`s + animações nativas — **sem** GIF, vídeo ou pintura por frame
-em Python): anéis concêntricos incompletos (arcos via `PathAngleArc`, cada
-um com rotação/velocidade próprias), glow por círculos concêntricos
-translúcidos (sem shader, para manter previsível), marcas radiais discretas,
-partículas orbitais, e um núcleo central com pulso de "respiração".
+em Python). Camadas: glow ambiente (4 círculos concêntricos translúcidos,
+sem shader), 3 anéis com arcos incompletos (`PathAngleArc`, cada um com
+rotação/velocidade próprias), um **anel segmentado** (16 ticks discretos
+girando numa velocidade própria — a camada nova do v0.6, dá profundidade
+sem virar bagunça visual), partículas orbitais, e um núcleo central com
+pulso de "respiração".
 
 Reage a estado real via três propriedades (`state`, `aiConfigured`,
-`aiSessionActive`), vindas do Bridge:
-- **IDLE** — movimento lento, respiração suave.
-- **THINKING/WORKING/LISTENING/SPEAKING** — rotação mais rápida, pulso mais forte.
-- **ERROR** — cor muda para o accent de erro (com transição suave) e volta
-  sozinha quando o backend volta para `idle`.
-- **Sem IA configurada/sessão inativa** — brilho reduzido (`dim`), mas o
-  núcleo nunca "morre" nem some.
+`aiSessionActive`), vindas do Bridge — `idle | thinking | working |
+listening | speaking | waiting_confirmation | error` são os únicos estados
+válidos hoje (`app/state.py`), e o componente já sabe reagir a todos eles
+mesmo que o backend só produza `idle`/`thinking`/`error` em runtime:
+- **IDLE** — respiração suave, rotações lentas independentes.
+- **THINKING/WORKING/LISTENING/SPEAKING** — rotação mais rápida, pulso mais
+  forte (`alert`).
+- **WAITING_CONFIRMATION** — accent âmbar (`Theme.stateColor`), sem acelerar
+  a rotação — é espera, não processamento.
+- **ERROR** — accent vermelho/coral com transição suave, pulso de alerta
+  mais rápido (mesmo `alert` do THINKING) e o anel interno **congela**
+  brevemente (`running: !core.errored`) para dar sensação de interrupção —
+  sem flash agressivo — e retoma sozinho quando o estado sai de `error`.
+- **Sem IA configurada/sessão inativa** — brilho reduzido (`dim = 0.72`,
+  era 0.68 no v0.5), mas o núcleo nunca "morre" nem some.
 
 ### Boot, resize, fullscreen
 
-Sequência de entrada curta (~0,9s): núcleo aparece primeiro, painéis (chat/
-status/input) em seguida — só cosmético, nunca bloqueia o backend (que
-inicia em paralelo, de forma totalmente independente). `F11` alterna
-fullscreen, `Esc` sai dele. Janela sem moldura nativa (`FramelessWindowHint`):
-mover usa `Window.startSystemMove()`, redimensionar pelas bordas usa
+Sequência de entrada em etapas, ~1s no total (v0.6: era um único degrau no
+v0.5): núcleo aparece primeiro (~120ms), depois a região núcleo+chat
+(~320ms), depois a faixa de status (~620ms), depois o input (~760ms) — só
+cosmético, nunca bloqueia o backend (que inicia em paralelo, de forma
+totalmente independente). `F11` alterna fullscreen, `Esc` sai dele. Janela
+sem moldura nativa (`FramelessWindowHint`): mover usa
+`Window.startSystemMove()`, redimensionar pelas bordas usa
 `Window.startSystemResize(edges)` — APIs oficiais do Qt, sem cálculo manual
 de coordenadas.
 
@@ -145,6 +178,19 @@ o v0.4). A cor do cartão depende do `riskLevel` (`read` = ciano,
 isso ainda — só existe para o backend/frontend já saberem se comunicar
 quando ferramentas reais existirem.
 
+**Bug do v0.5 corrigido no v0.6:** o overlay usava `request !== null`
+(comparação estrita) para decidir se devia aparecer. Um
+`Property("QVariant")` do Qt que devolve `None` do Python chega ao QML como
+`undefined`, não como `null` — e em JavaScript `undefined !== null` é
+sempre `true`. Resultado: o overlay ficava com `opacity: 1` (visível,
+bloqueando clique) **mesmo sem nenhum pedido pendente**, mostrando um
+cartão vazio logo na inicialização. Corrigido trocando as comparações
+estritas por checagem "truthy" (`request ? ... : ...`, mesmo padrão já
+usado em outros pontos do próprio arquivo), que trata `null` e `undefined`
+da mesma forma. Coberto por `tests/test_qml_smoke.py`
+(`test_permission_overlay_hidden_when_no_pending_request` e
+`test_permission_overlay_visible_with_pending_request`).
+
 ## Modo de desenvolvimento (`devMode`)
 
 Quando `JARVIS_DEV=1` está no ambiente (mesma flag que já existia em
@@ -157,22 +203,35 @@ para o usuário final:
 | `Ctrl+Shift+2` | Simula estado `THINKING` |
 | `Ctrl+Shift+3` | Simula estado `ERROR` |
 | `Ctrl+Shift+4` | Dispara um pedido de permissão de teste |
+| `Ctrl+Shift+5` | Simula estado `WAITING_CONFIRMATION` |
 
 Nenhuma resposta de IA é simulada — só estados visuais e o overlay de
 permissão, para poder validar a interface sem depender de uma sessão real.
+
+`ChatPanel.qml` também ganhou uma `property bool pending` (ligada a
+`bridge.busy` em `Main.qml`): enquanto uma resposta está em andamento,
+mostra três pontos discretos pulsando no rodapé da lista — atividade real
+do backend, não um spinner genérico nem texto de resposta inventado.
 
 ## Testes
 
 - `tests/test_bridge.py` — offline, com `JarvisApplication` real sobre
   `FakeAIService` (mesmos fakes usados pelo backend). Sem GUI, sem QML.
+  Inclui `test_dev_mode_defaults_to_false` (v0.6).
+- `tests/test_message_model.py` (novo no v0.6) — `MessageListModel` isolado:
+  roles, `sync()` incremental/reset, `update_content()`.
 - `tests/test_qml_smoke.py` — confirma que `Main.qml` carrega sem
-  erros/warnings, com `QT_QPA_PLATFORM=offscreen`. **Não** testa pixels —
-  isso é responsabilidade de inspeção visual manual.
+  erros/warnings, com `QT_QPA_PLATFORM=offscreen`. v0.6 adiciona dois testes
+  específicos do `PermissionOverlay` (localizado via `objectName:
+  "permissionOverlay"`): oculto sem pedido pendente, visível e com os dados
+  certos quando existe um. **Não** testa pixels — isso é responsabilidade de
+  inspeção visual manual.
 
 ## Limitações desta versão
 
-- Sem streaming real (o contrato de eventos já suporta; falta só ligar
-  `response.delta` quando o Agent SDK real estiver conectado).
+- Sem streaming real (o contrato de eventos já suporta; `MessageListModel.update_content()`
+  já existe como ponto de extensão — falta só ligar `response.delta` quando
+  o Agent SDK real estiver conectado).
 - Sem voz, sem MCP, sem ferramentas reais, sem Ruflo — tudo isso continua
   planejado, não implementado.
 - Sem tela de configurações, sem temas alternativos, sem persistência de

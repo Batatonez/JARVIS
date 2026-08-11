@@ -8,7 +8,7 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
-🚧 **JARVIS Frontend/HUD v0.5.** A primeira interface gráfica real do projeto (PySide6/QML), sobre a Application Layer (`JarvisApplication`) e o Core assíncrono com a arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`). O terminal continua funcionando à parte. Ainda sem voz, sem MCP e sem automação. Neste ambiente de desenvolvimento não há API key configurada, então o comportamento observável é o fallback seguro (`UnavailableAIService`) — o HUD mostra `AI OFFLINE` normalmente, sem travar e sem pedir credencial.
+🚧 **JARVIS v0.6 — HUD Refinement / UX Foundation.** A interface gráfica (PySide6/QML) introduzida no v0.5 ganhou um refinamento visual profundo — contraste, núcleo de IA v2, layout, boot em etapas — sobre a mesma Application Layer (`JarvisApplication`) e o Core assíncrono com a arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`). O terminal continua funcionando à parte. Ainda sem voz, sem MCP e sem automação. Neste ambiente de desenvolvimento não há API key configurada, então o comportamento observável é o fallback seguro (`UnavailableAIService`) — o HUD mostra `AI OFFLINE` normalmente, sem travar e sem pedir credencial.
 
 ## Como executar
 
@@ -84,8 +84,8 @@ Pastas ainda não implementadas contêm um `README.md` explicando sua finalidade
 
 ## Funcionalidades
 
-**Implementado (JARVIS Frontend/HUD v0.5):**
-- HUD gráfico (PySide6/QML, `python -m frontend`): núcleo de IA animado reagindo a estado real, chat, status, cancelamento, nova conversa, overlay de permissão — ver [`frontend/README.md`](frontend/README.md)
+**Implementado (JARVIS v0.6 — HUD Refinement/UX Foundation, sobre a base do v0.5):**
+- HUD gráfico (PySide6/QML, `python -m frontend`): núcleo de IA v2 (anel segmentado, mais contraste, reage a idle/thinking/error/waiting_confirmation/offline), chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão (bug de visibilidade do v0.5 corrigido) — ver [`frontend/README.md`](frontend/README.md)
 - `JarvisApplication`: API estável para qualquer frontend — `send_message`, `cancel_current_request`, `new_conversation`, `get_status`, `get_messages`, `subscribe`/`events` (ver [`docs/application-api.md`](docs/application-api.md))
 - Histórico de conversa em runtime, separado da memória persistente
 - Stream de eventos em processo (sem WebSocket/servidor) — consumido tanto pelo HUD quanto preparado para futuros frontends

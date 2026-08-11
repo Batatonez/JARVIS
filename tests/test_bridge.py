@@ -48,6 +48,12 @@ class BridgeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         application = build_isolated_application(Path(self._tmp.name), ai_service=ai_service)
         return JarvisBridge(application, dev_mode=dev_mode)
 
+    def test_dev_mode_defaults_to_false(self) -> None:
+        application = build_isolated_application(Path(self._tmp.name))
+        bridge = JarvisBridge(application)
+
+        self.assertFalse(bridge.devMode)
+
     def test_initial_properties_before_start(self) -> None:
         bridge = self._bridge()
 

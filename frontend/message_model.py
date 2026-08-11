@@ -9,6 +9,7 @@ delegate. Só faz reset completo quando o histórico encolhe ou diverge (ex.:
 `/new`).
 """
 
+import dataclasses
 from enum import IntEnum
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
@@ -76,3 +77,18 @@ class MessageListModel(QAbstractListModel):
         self.beginResetModel()
         self._messages = list(messages)
         self.endResetModel()
+
+    def update_content(self, message_id: str, content: str) -> bool:
+        """Atualiza o texto de uma mensagem já existente sem recriar a linha.
+
+        Nenhum backend chama isto ainda (`response.delta` não existe) — é só
+        o ponto de extensão para quando streaming real existir: o Bridge
+        poderia chamar isto a cada delta em vez de esperar `sync()`.
+        """
+        for row, message in enumerate(self._messages):
+            if message.id == message_id:
+                self._messages[row] = dataclasses.replace(message, content=content)
+                index = self.index(row, 0)
+                self.dataChanged.emit(index, index, [MessageRoles.ContentRole])
+                return True
+        return False

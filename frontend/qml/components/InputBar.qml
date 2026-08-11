@@ -26,12 +26,15 @@ Item {
     }
 
     Rectangle {
+        id: frame
         anchors.fill: parent
         radius: Theme.radiusMedium
         color: Theme.surfaceElevated
         border.width: 1
-        border.color: textArea.activeFocus ? Theme.borderFocus : Theme.borderSubtle
+        border.color: textArea.activeFocus ? Theme.borderFocus : (frameHover.hovered ? Theme.borderStrong : Theme.borderSubtle)
         Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+
+        HoverHandler { id: frameHover }
 
         Row {
             id: contentRow

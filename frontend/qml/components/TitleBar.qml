@@ -53,7 +53,7 @@ Item {
     Text {
         anchors.centerIn: parent
         text: titleBar.subtitle
-        color: Theme.textFaint
+        color: Theme.textMuted
         font.family: Theme.fontFamily
         font.pixelSize: 11
         font.letterSpacing: Theme.letterSpacingLabel

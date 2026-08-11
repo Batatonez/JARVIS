@@ -18,7 +18,12 @@ Window {
     title: "JARVIS"
 
     readonly property bool isFullscreen: visibility === Window.FullScreen
-    property bool uiBooted: false
+    // Boot em etapas (~1s no total): núcleo primeiro, depois a região
+    // core+chat, depois status, depois input — em vez de tudo aparecer de
+    // uma vez com o núcleo.
+    property bool rowBooted: false
+    property bool statusBooted: false
+    property bool inputBooted: false
 
     // ------------------------------------------------------------------
     // Encerramento limpo: intercepta o fechamento, deixa o Bridge encerrar
@@ -54,6 +59,7 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+2"; enabled: bridge.devMode; onActivated: bridge.simulateState("thinking") }
     Shortcut { sequence: "Ctrl+Shift+3"; enabled: bridge.devMode; onActivated: bridge.simulateState("error") }
     Shortcut { sequence: "Ctrl+Shift+4"; enabled: bridge.devMode; onActivated: bridge.simulateState("permission") }
+    Shortcut { sequence: "Ctrl+Shift+5"; enabled: bridge.devMode; onActivated: bridge.simulateState("waiting_confirmation") }
 
     // ------------------------------------------------------------------
     // Fundo: quase preto, com vinheta muito sutil e grid discreto.
@@ -112,7 +118,7 @@ Window {
             Layout.rightMargin: Theme.spacingXl
             Layout.topMargin: Theme.spacingMd
             spacing: Theme.spacingXl
-            opacity: window.uiBooted ? 1 : 0
+            opacity: window.rowBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
 
             // -- Painel do núcleo (protagonista) --
@@ -120,7 +126,7 @@ Window {
                 // Referencia `window.width` (estável, externo a este layout)
                 // em vez de `parent.width` (o próprio RowLayout que está
                 // sendo calculado) — evita ciclo de rearranjo.
-                Layout.preferredWidth: window.width * 0.4
+                Layout.preferredWidth: window.width * 0.42
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: Theme.spacingLg
@@ -130,7 +136,7 @@ Window {
                 JarvisCore {
                     id: core
                     Layout.alignment: Qt.AlignHCenter
-                    size: Math.max(220, Math.min(320, window.width * 0.22))
+                    size: Math.max(240, Math.min(360, window.width * 0.24))
                     state: bridge.jarvisState
                     aiConfigured: bridge.aiConfigured
                     aiSessionActive: bridge.aiSessionActive
@@ -182,6 +188,7 @@ Window {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     model: bridge.messages
+                    pending: bridge.busy
                 }
             }
         }
@@ -196,7 +203,7 @@ Window {
             aiConfigured: bridge.aiConfigured
             aiSessionActive: bridge.aiSessionActive
             aiBackend: bridge.aiBackend
-            opacity: window.uiBooted ? 1 : 0
+            opacity: window.statusBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
         }
 
@@ -207,7 +214,7 @@ Window {
             Layout.topMargin: Theme.spacingSm
             Layout.bottomMargin: Theme.spacingLg
             Layout.preferredHeight: inputBar.implicitHeight
-            opacity: window.uiBooted ? 1 : 0
+            opacity: window.inputBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
 
             InputBar {
@@ -315,6 +322,7 @@ Window {
     }
 
     PermissionOverlay {
+        objectName: "permissionOverlay"
         anchors.fill: parent
         z: 100
         request: bridge.pendingPermission
@@ -329,8 +337,12 @@ Window {
     // ------------------------------------------------------------------
     Component.onCompleted: {
         coreBootTimer.start()
-        panelsBootTimer.start()
+        rowBootTimer.start()
+        statusBootTimer.start()
+        inputBootTimer.start()
     }
-    Timer { id: coreBootTimer; interval: 150; onTriggered: core.play() }
-    Timer { id: panelsBootTimer; interval: 480; onTriggered: window.uiBooted = true }
+    Timer { id: coreBootTimer; interval: 120; onTriggered: core.play() }
+    Timer { id: rowBootTimer; interval: 320; onTriggered: window.rowBooted = true }
+    Timer { id: statusBootTimer; interval: 620; onTriggered: window.statusBooted = true }
+    Timer { id: inputBootTimer; interval: 760; onTriggered: window.inputBooted = true }
 }

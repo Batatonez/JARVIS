@@ -275,7 +275,7 @@ class JarvisBridge(QObject):
         if not self._dev_mode:
             return
         name = name.lower()
-        if name in ("idle", "thinking", "error"):
+        if name in ("idle", "thinking", "error", "waiting_confirmation"):
             self._set_property("_state", name, self.stateChanged)
         elif name == "permission":
             self._app.permissions.request(
