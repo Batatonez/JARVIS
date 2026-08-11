@@ -9,11 +9,24 @@ QtObject {
     // ganharam contraste real — o v0.5 estava escuro demais em status,
     // labels e placeholders.
     readonly property color background: "#070A10"
+    // v0.8: topo do gradiente do fundo (Main.qml) — azul-grafite bem suave,
+    // nunca preto puro; dá profundidade sem virar "wallpaper".
+    readonly property color backgroundSecondary: "#0C1524"
     readonly property color surface: "#0C1420"
     readonly property color surfaceElevated: "#121D2C"
     readonly property color surfacePanel: "#0F1826" // faixas discretas (status), entre surface e surfaceElevated
+    // Superfície translúcida (StatusPanel, cartões) — sensação de "vidro"
+    // sobre o HUD contínuo, sem virar card opaco flutuante.
+    readonly property color surfaceGlass: Qt.rgba(0.058, 0.086, 0.129, 0.62)
+    // Hover genérico para controles que hoje só tinham pressed/tint fixo
+    // (ActionButton, WindowButton, MicButton) — um único valor em vez de
+    // rgba(1,1,1,x) espalhado com opacidades levemente diferentes.
+    readonly property color surfaceHover: Qt.rgba(1, 1, 1, 0.07)
 
     readonly property color cyan: "#5CE1E6"
+    // Ciano mais saturado/claro — hover e ênfase de elementos primários
+    // (não é um estado novo, é o "cyan" sob luz mais forte).
+    readonly property color primaryBright: "#8FF3F7"
     readonly property color blue: "#4C8DFF"
     readonly property color violet: "#9B6BFF"
 
@@ -52,7 +65,7 @@ QtObject {
     readonly property int durationFast: 120
     readonly property int durationNormal: 220
     readonly property int durationSlow: 420
-    readonly property int durationBoot: 900
+    readonly property int durationBoot: 1050
 
     readonly property int easingStandard: Easing.OutCubic
 

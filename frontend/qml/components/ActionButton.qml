@@ -16,11 +16,13 @@ Rectangle {
     implicitWidth: labelText.implicitWidth + Theme.spacingLg * 2
     implicitHeight: 36
     radius: Theme.radiusMedium
-    color: emphasis ? tint : "transparent"
+    color: emphasis ? (mouseArea.containsMouse ? Theme.primaryBright : tint) : (mouseArea.containsMouse ? Theme.surfaceHover : "transparent")
     border.width: emphasis ? 0 : 1
-    border.color: Qt.rgba(1, 1, 1, 0.14)
+    border.color: mouseArea.containsMouse ? Theme.borderStrong : Qt.rgba(1, 1, 1, 0.14)
     opacity: mouseArea.pressed ? 0.85 : 1
     scale: mouseArea.pressed ? 0.97 : 1
+    Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+    Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
     Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
     Behavior on scale { NumberAnimation { duration: Theme.durationFast } }
 
@@ -28,11 +30,12 @@ Rectangle {
         id: labelText
         anchors.centerIn: parent
         text: button.label
-        color: button.emphasis ? Theme.background : Theme.textMuted
+        color: button.emphasis ? Theme.background : (mouseArea.containsMouse ? Theme.textPrimary : Theme.textMuted)
         font.family: Theme.fontFamily
         font.pixelSize: 12
         font.weight: Font.DemiBold
         font.letterSpacing: Theme.letterSpacingLabel
+        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
     }
 
     MouseArea {

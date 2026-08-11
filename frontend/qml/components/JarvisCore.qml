@@ -35,6 +35,9 @@ Item {
     // imediatamente distinguível de THINKING.
     readonly property bool listening: state === "listening"
     readonly property bool speaking: state === "speaking"
+    // Espera é deliberadamente mais lenta que IDLE — "aguardando você",
+    // não "processando" nem "parado".
+    readonly property bool waiting: state === "waiting_confirmation"
     // Pulso mais rápido tanto em atividade real quanto em erro (alerta) —
     // waiting_confirmation fica de fora de propósito: é espera, não processamento.
     readonly property bool alert: active || errored
@@ -42,7 +45,7 @@ Item {
     // Offline nunca deve parecer "morto" — só um pouco mais discreto (v0.6:
     // 0.72, era 0.68 — o núcleo ficava legível demais apagado no v0.5).
     readonly property real dim: (aiConfigured && aiSessionActive) ? 1.0 : 0.72
-    readonly property int ringSpeed: active ? 3200 : 13000
+    readonly property int ringSpeed: active ? 3200 : (waiting ? 17000 : 13000)
     property bool booted: false
 
     implicitWidth: size
@@ -76,6 +79,26 @@ Item {
             Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
             Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Camada 1.5 — "energy ring": o único anel realmente completo/fechado
+    // (os outros três são arcos incompletos) — dá uma referência de
+    // contorno estável em volta de tudo que gira. Rectangle com borda
+    // circular é mais barato que um Shape para um círculo perfeito.
+    // ---------------------------------------------------------------
+    Rectangle {
+        id: energyRing
+        anchors.centerIn: parent
+        width: core.size * 0.82
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: 1
+        border.color: core.accent
+        opacity: 0.16 * core.dim
+        Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+        Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
     }
 
     // ---------------------------------------------------------------
@@ -179,9 +202,12 @@ Item {
         id: segmentRing
         anchors.fill: parent
         opacity: core.dim
+        // Erro reduz (não congela) esta camada — combinado com o anel
+        // interno congelando de vez, dá a sensação de "interrupção
+        // parcial" pedida em vez de tudo travar ou nada mudar.
         RotationAnimation on rotation {
             from: 0; to: -360
-            duration: core.ringSpeed * 2.1
+            duration: core.ringSpeed * 2.1 * (core.errored ? 2.6 : 1)
             loops: Animation.Infinite
             running: core.booted
         }
@@ -239,6 +265,78 @@ Item {
     }
 
     // ---------------------------------------------------------------
+    // Camada 4.5 — nós orbitais: maiores que as partículas da Camada 4,
+    // com halo próprio, girando juntos num grupo só (velocidade/sentido
+    // distintos das partículas) — profundidade extra sem virar sistema de
+    // partículas pesado (só 3 nós).
+    // ---------------------------------------------------------------
+    Item {
+        id: nodeOrbit
+        anchors.fill: parent
+        RotationAnimation on rotation {
+            from: 0; to: 360
+            duration: core.ringSpeed * 1.7
+            loops: Animation.Infinite
+            running: core.booted
+        }
+        Repeater {
+            model: 3
+            delegate: Item {
+                required property int index
+                anchors.fill: parent
+                rotation: index * 120 + 20
+
+                Rectangle {
+                    id: nodeHalo
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: parent.height * 0.065
+                    width: 9; height: 9; radius: 4.5
+                    color: core.accent
+                    opacity: 0.14 * core.dim
+                    Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+                }
+                Rectangle {
+                    anchors.centerIn: nodeHalo
+                    width: 3.4; height: 3.4; radius: 1.7
+                    color: core.accent
+                    opacity: 0.85 * core.dim
+                    Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Camada núcleo — "ondas" saindo do Core durante SPEAKING (saída de
+    // energia/informação) — um anel que expande e desaparece, em loop.
+    // ---------------------------------------------------------------
+    Rectangle {
+        id: speakingRipple
+        anchors.centerIn: parent
+        width: core.size * 0.3
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: 1.2
+        border.color: core.accent
+        visible: core.speaking
+        opacity: 0
+        scale: 1
+
+        SequentialAnimation {
+            id: rippleAnim
+            loops: Animation.Infinite
+            running: core.speaking
+            ParallelAnimation {
+                NumberAnimation { target: speakingRipple; property: "opacity"; from: 0.5; to: 0; duration: 1400; easing.type: Easing.OutCubic }
+                NumberAnimation { target: speakingRipple; property: "scale"; from: 1.0; to: 2.15; duration: 1400; easing.type: Easing.OutCubic }
+            }
+            PauseAnimation { duration: 180 }
+            PropertyAction { target: speakingRipple; property: "scale"; value: 1.0 }
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Camada 5 — núcleo central (respiração / pulso).
     // ---------------------------------------------------------------
     Rectangle {
@@ -250,6 +348,7 @@ Item {
         color: core.accent
         opacity: 0.35 * core.dim
         Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+        Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
 
         // Em LISTENING, a escala segue o nível de áudio real em vez do
         // pulso "de respiração" genérico — é o que torna o núcleo
@@ -264,6 +363,20 @@ Item {
             NumberAnimation { to: core.alert ? 1.2 : 1.08; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
             NumberAnimation { to: 1.0; duration: core.alert ? 480 : 1700; easing.type: Easing.InOutSine }
         }
+    }
+
+    // Camada intermediária entre o halo e o ponto central — suaviza o
+    // "degrau" de opacidade entre as duas, simulando um falloff radial sem
+    // precisar de um RadialGradient/shader de verdade.
+    Rectangle {
+        anchors.centerIn: parent
+        width: core.size * 0.19
+        height: width
+        radius: width / 2
+        color: core.accent
+        opacity: 0.55 * core.dim
+        Behavior on color { ColorAnimation { duration: Theme.durationSlow } }
+        Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
     }
 
     Rectangle {

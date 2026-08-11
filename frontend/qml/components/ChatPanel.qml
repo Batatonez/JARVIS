@@ -62,26 +62,57 @@ Item {
 
         footer: Item {
             width: listView.width
-            height: panel.pending ? 28 : 0
+            height: panel.pending ? 30 : 0
             visible: panel.pending
             Behavior on height { NumberAnimation { duration: Theme.durationFast } }
 
             Row {
                 x: Theme.spacingMd
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 5
+                spacing: Theme.spacingSm
 
-                Repeater {
-                    model: 3
-                    delegate: Rectangle {
-                        required property int index
-                        width: 4; height: 4; radius: 2
-                        color: Theme.cyan
-                        SequentialAnimation on opacity {
-                            loops: Animation.Infinite
-                            PauseAnimation { duration: index * 160 }
-                            NumberAnimation { to: 1.0; duration: 420; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 0.25; duration: 420; easing.type: Easing.InOutSine }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "JARVIS"
+                    color: Theme.cyan
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: Theme.letterSpacingLabel
+                }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 4; height: 4; radius: 2
+                    color: Theme.cyan
+                    SequentialAnimation on opacity {
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.3; duration: 700; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutSine }
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "PROCESSING"
+                    color: Theme.textFaint
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.letterSpacingLabel
+                }
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    Repeater {
+                        model: 3
+                        delegate: Rectangle {
+                            required property int index
+                            width: 3; height: 3; radius: 1.5
+                            color: Theme.textFaint
+                            SequentialAnimation on opacity {
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: index * 160 }
+                                NumberAnimation { to: 1.0; duration: 420; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 0.25; duration: 420; easing.type: Easing.InOutSine }
+                            }
                         }
                     }
                 }

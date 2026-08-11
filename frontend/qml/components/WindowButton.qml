@@ -15,8 +15,8 @@ Item {
     implicitWidth: 46
     implicitHeight: 40
 
-    readonly property color hoverColor: danger ? Theme.danger : Qt.rgba(1, 1, 1, 0.08)
-    readonly property color glyphColor: mouseArea.containsMouse && danger ? "#FFFFFF" : Theme.textMuted
+    readonly property color hoverColor: danger ? Theme.danger : Theme.surfaceHover
+    readonly property color glyphColor: mouseArea.containsMouse ? (danger ? "#FFFFFF" : Theme.textPrimary) : Theme.textMuted
 
     Rectangle {
         anchors.fill: parent

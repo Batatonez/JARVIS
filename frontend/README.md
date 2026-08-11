@@ -1,16 +1,19 @@
 # frontend/
 
 O HUD do JARVIS — interface gráfica real do projeto, introduzida no v0.5,
-refinada visualmente no v0.6 (HUD Refinement / UX Foundation) e com voz
-desde o **v0.7 (Voice Foundation)**. PySide6 (Qt for Python) + Qt Quick/QML.
-O terminal (`python main.py`, `app/terminal.py`) continua existindo,
-separado e inalterado — este é um segundo frontend, não uma substituição, e
-não ganhou voz (é um recurso específico do HUD).
+refinada visualmente no v0.6 (HUD Refinement / UX Foundation), com voz desde
+o v0.7 (Voice Foundation), e com um segundo refinamento visual profundo no
+**v0.8 (HUD Overhaul / UX 2.0)**. PySide6 (Qt for Python) + Qt Quick/QML. O
+terminal (`python main.py`, `app/terminal.py`) continua existindo, separado
+e inalterado — este é um segundo frontend, não uma substituição, e não
+ganhou voz (é um recurso específico do HUD).
 
-**v0.7 não muda a arquitetura do v0.5/v0.6** (HUD → Bridge → JarvisApplication
-continua igual) — soma um `VoiceService` na Application Layer, ao lado do
-`JarvisCore`, e o HUD passa a falar com ele através do mesmo Bridge, nunca
-diretamente com STT/TTS (ver seção "Voz" abaixo).
+**v0.8 não muda a arquitetura do v0.5/v0.6/v0.7** (HUD → Bridge →
+JarvisApplication continua igual, nenhuma capability nova) — é só
+qualidade visual: design system consolidado, núcleo de IA v3, layout que
+escala em monitores grandes, boot mais elaborado, e acabamento em
+praticamente todo componente. Ver "O que mudou no v0.8" abaixo para o
+resumo, e cada seção de componente para o detalhe.
 
 ## Como executar
 
@@ -126,71 +129,125 @@ frontend/qml/
     └── PermissionOverlay.qml  pedido de permissão (READ/ACTION/DANGEROUS)
 ```
 
-### `Theme.qml`
+### `Theme.qml` — design system
 
 Nenhuma cor/espaçamento/duração é hardcoded fora daqui — sempre `Theme.*`.
-Paleta v0.6 (mais contraste que o v0.5, mesma direção): fundo quase preto
-com leve azul (`background #070A10`), superfícies azul-grafite
-(`surface`/`surfaceElevated`/`surfacePanel`), ciano frio (`cyan #5CE1E6`)
-como primária, azul elétrico (`blue #4C8DFF`) como secundária, violeta
-(`violet #9B6BFF`) só como accent pontual (partículas/segmentos). Texto:
-`textPrimary` quase branco levemente azulado, `textSecondary`/`textMuted`/
-`textFaint` — os três foram clareados em relação ao v0.5, que deixava
-status, placeholders e labels pouco legíveis sobre o fundo escuro. Fonte:
-`Segoe UI Variable` com fallback automático do próprio Windows para
-`Segoe UI`.
+Paleta (v0.8 aumenta a profundidade, mesma direção desde o v0.6): fundo
+quase preto com leve azul (`background #070A10`, topo do gradiente do fundo
+`backgroundSecondary #0C1524` — nunca preto puro), superfícies em camadas
+(`surface` → `surfaceElevated` → `surfaceGlass`, translúcida, usada no
+`StatusPanel` para uma sensação de "vidro" sobre o HUD contínuo em vez de
+card opaco flutuante), ciano frio (`cyan #5CE1E6`, e `primaryBright
+#8FF3F7` para hover/ênfase) como primária, azul elétrico (`blue #4C8DFF`)
+como secundária, violeta (`violet #9B6BFF`) como accent — sparse por
+padrão, mas é a cor inteira de `LISTENING`. `surfaceHover` centraliza o
+hover genérico de botões (`ActionButton`, `WindowButton`, `MicButton`), que
+antes usava `rgba(1,1,1,x)` com opacidades ligeiramente diferentes espalhadas
+pelos arquivos. Texto: `textPrimary` quase branco levemente azulado,
+`textSecondary`/`textMuted`/`textFaint`. Fonte: `Segoe UI Variable` com
+fallback automático do próprio Windows para `Segoe UI`. Espaçamento
+(`spacingXs..Xl`), radius (`radiusSmall/Medium/Large`) e motion
+(`durationFast/Normal/Slow/Boot`, `easingStandard`) continuam a mesma escala
+desde o v0.6 — já eram consistentes, só ganharam mais um consumidor (as
+camadas novas do Core).
 
-### `JarvisCore.qml` — o núcleo (AI Core) v2
+Nomes já usados em ~12 arquivos QML (`cyan`, `blue`, `violet`,
+`borderStrong` etc.) foram mantidos como estão — trocar por
+`primary`/`secondary`/`accent`/`borderActive` em todo lugar seria só
+churn/renomeação sem ganho visual real, então os tokens novos do v0.8
+(`backgroundSecondary`, `surfaceGlass`, `surfaceHover`, `primaryBright`)
+foram somados, não substituídos.
+
+### `JarvisCore.qml` — o núcleo (AI Core) v3
 
 O elemento visual central, desenhado inteiramente em QML (Qt Quick Shapes +
 `Rectangle`s + animações nativas — **sem** GIF, vídeo ou pintura por frame
-em Python). Camadas: glow ambiente (4 círculos concêntricos translúcidos,
-sem shader), 3 anéis com arcos incompletos (`PathAngleArc`, cada um com
-rotação/velocidade próprias), um **anel segmentado** (16 ticks discretos
-girando numa velocidade própria — a camada nova do v0.6, dá profundidade
-sem virar bagunça visual), partículas orbitais, e um núcleo central com
-pulso de "respiração".
+em Python, sem shader/blur). Camadas, de fora para dentro: glow ambiente (4
+círculos concêntricos translúcidos), um **anel completo** (`energyRing` —
+novo no v0.8; os outros três continuam arcos incompletos, então agora há
+"anéis com funções visuais distintas": um fechado, três abertos, um
+segmentado), 3 anéis com arcos incompletos (`PathAngleArc`, velocidades e
+sentidos de rotação diferentes — alguns horário, outros anti-horário, para
+dar profundidade), o **anel segmentado** (16 ticks), **partículas
+orbitais** (6 pontos pequenos) e **nós orbitais** (3 pontos maiores com
+halo próprio, girando como grupo — novo no v0.8, mais um nível de
+profundidade sem virar sistema de partículas pesado), e o núcleo central
+com uma camada intermediária extra de opacidade entre o halo e o ponto
+central (simula um falloff radial sem precisar de `RadialGradient`/shader).
 
 Reage a estado real via quatro propriedades (`state`, `aiConfigured`,
 `aiSessionActive`, `voiceLevel`), vindas do Bridge — `idle | thinking |
 working | listening | processing_speech | speaking | waiting_confirmation |
 error` são os únicos estados válidos hoje (`app/state.py`):
 - **IDLE** — respiração suave, rotações lentas independentes.
-- **LISTENING** — cor violeta (`Theme.violet`, para não se confundir com
-  THINKING), e o núcleo passa a reagir a `voiceLevel` **de verdade**: o halo
-  central e o anel externo pulsam com o nível real do microfone (throttled
-  a ~20 updates/s na origem, suavizado por um `Behavior` de 90ms) — não é
-  uma animação genérica, para de reagir no instante em que o áudio para.
-- **PROCESSING_SPEECH** — usa o pulso "alert" padrão (como THINKING),
-  enquanto a transcrição termina.
+- **LISTENING** — cor violeta, e o núcleo passa a reagir a `voiceLevel`
+  **de verdade**: o halo central e o anel externo pulsam com o nível real
+  do microfone (throttled a ~20 updates/s na origem, suavizado por um
+  `Behavior` de 90ms) — não é uma animação genérica, para de reagir no
+  instante em que o áudio para.
+- **PROCESSING_SPEECH** — pulso "alert" padrão (como THINKING); a transição
+  de cor violeta → ciano ao sair de LISTENING já é orgânica de graça (o
+  `Behavior on accent` de 420ms anima qualquer mudança de cor do Core, não
+  só essa).
 - **THINKING/WORKING** — rotação mais rápida, pulso mais forte (`alert`).
-- **SPEAKING** — cor azul elétrica (`Theme.blue`), mesmo pulso "alert".
-- **WAITING_CONFIRMATION** — accent âmbar (`Theme.stateColor`), sem acelerar
-  a rotação — é espera, não processamento.
+- **SPEAKING** — cor azul elétrica, mesmo pulso "alert", **e uma onda**
+  (`speakingRipple`, novo no v0.8): um anel que expande e desaparece em
+  loop, saindo do centro — a "saída de energia/informação" pedida, sem
+  waveform (o SAPI5 não expõe amplitude real da fala, então nenhum medidor
+  de nível é mostrado durante SPEAKING — só nesta onda simbólica).
+- **WAITING_CONFIRMATION** — accent âmbar, e desde o v0.8 a rotação fica
+  ainda mais lenta que IDLE (`ringSpeed` próprio) — "aguardando você", não
+  "parado".
 - **ERROR** — accent vermelho/coral com transição suave, pulso de alerta
-  mais rápido (mesmo `alert` do THINKING) e o anel interno **congela**
-  brevemente (`running: !core.errored`) para dar sensação de interrupção —
-  sem flash agressivo — e retoma sozinho quando o estado sai de `error`.
+  mais rápido e o anel interno **congela** (`running: !core.errored`); no
+  v0.8 o anel segmentado também desacelera (não congela) — interrupção
+  parcial em camadas diferentes, não tudo travando ou nada mudando — e
+  retoma sozinho quando o estado sai de `error`.
 - **Sem IA configurada/sessão inativa** — brilho reduzido (`dim = 0.72`),
   mas o núcleo nunca "morre" nem some.
 
-### Boot, resize, fullscreen
+Todas as transições de cor/opacity/scale usam `Behavior`, incluindo o halo
+e o ponto central (não tinham no v0.7) — nenhuma mudança de estado é
+instantânea.
 
-Sequência de entrada em etapas, ~1s no total (v0.6: era um único degrau no
-v0.5): núcleo aparece primeiro (~120ms), depois a região núcleo+chat
-(~320ms), depois a faixa de status (~620ms), depois o input (~760ms) — só
+### Layout, boot, resize, fullscreen
+
+**Core escalável (v0.8):** o tamanho do Core é `clamp(250, 520, min(largura,
+altura da janela) × 0.38)` — cresce de verdade em monitores grandes
+(1920×1080, 2560×1440) em vez de bater um teto fixo cedo, e nunca fica
+menor que 250px mesmo na janela mínima (1100×700). A coluna do Core ocupa
+46% da largura da janela (era 42%).
+
+**Breakpoint único (v0.8):** `window.width < 1250` ativa um modo compacto
+no `StatusPanel` — some com `MEMORY`/`SESSION` (secundários) e mantém
+`CORE`/`AI`/`VOICE` (prioritários), não um sistema de layout CSS-like.
+
+**Boot em etapas, ~1,3s no total (v0.8: era ~1s no v0.6/v0.7):** title bar
+(~60ms) → ponto semente no lugar do Core (imediato, some assim que o Core
+começa a "energizar") → núcleo (~160ms) → região núcleo+chat (~420ms) →
+status (~820ms) → input (~1000ms, mais a própria transição de opacity) — só
 cosmético, nunca bloqueia o backend (que inicia em paralelo, de forma
-totalmente independente). `F11` alterna fullscreen, `Esc` sai dele. Janela
-sem moldura nativa (`FramelessWindowHint`): mover usa
-`Window.startSystemMove()`, redimensionar pelas bordas usa
-`Window.startSystemResize(edges)` — APIs oficiais do Qt, sem cálculo manual
-de coordenadas.
+totalmente independente). Nenhuma porcentagem de carregamento falsa em
+nenhum momento.
 
-**Limitação conhecida:** com moldura customizada, o menu de Snap Layouts do
-Windows 11 (que aparece ao pairar o mouse sobre o botão nativo de maximizar)
-não existe, já que o botão de maximizar é desenhado por nós. Arrastar a
-janela até a borda da tela (Aero Snap) continua funcionando normalmente,
-porque usa `startSystemMove()` (API real do SO).
+`F11` alterna fullscreen, `Esc` sai dele. Janela sem moldura nativa
+(`FramelessWindowHint`): mover usa `Window.startSystemMove()`, redimensionar
+pelas bordas usa `Window.startSystemResize(edges)` — APIs oficiais do Qt,
+sem cálculo manual de coordenadas. Uma borda externa de 1px ciano bem sutil
+(`Theme` não define um token único pra isso — é um detalhe de acabamento só
+do `Main.qml`) dá um acabamento sem afetar hit-testing/resize.
+
+**Cantos arredondados — deliberadamente fora do v0.8:** arredondar uma
+`Window` frameless exigiria torná-la translúcida
+(`WA_TranslucentBackground`), o que arrisca o resize/Snap já validado desde
+o v0.5 sem eu conseguir validar visualmente a mudança neste ambiente —
+comportamento funcional > estética, conforme pedido.
+
+**Limitação conhecida (desde o v0.6):** com moldura customizada, o menu de
+Snap Layouts do Windows 11 (que aparece ao pairar o mouse sobre o botão
+nativo de maximizar) não existe, já que o botão de maximizar é desenhado
+por nós. Arrastar a janela até a borda da tela (Aero Snap) continua
+funcionando normalmente, porque usa `startSystemMove()` (API real do SO).
 
 ## Permissões (fundação, sem ferramentas reais)
 
@@ -200,6 +257,12 @@ o v0.4). A cor do cartão depende do `riskLevel` (`read` = ciano,
 `action` = âmbar, `dangerous` = vermelho). Nenhuma ferramenta real dispara
 isso ainda — só existe para o backend/frontend já saberem se comunicar
 quando ferramentas reais existirem.
+
+**Ênfase extra para DANGEROUS (v0.8):** borda do cartão mais grossa (2px em
+vez de 1,5px) e um glow externo vermelho bem discreto atrás do cartão — só
+para `riskLevel === "dangerous"`. READ/ACTION continuam com o tratamento
+padrão. Nenhuma confirmação adicional foi implementada (não pedida nesta
+versão) — é só reforço visual de que a decisão pesa mais.
 
 **Bug do v0.5 corrigido no v0.6:** o overlay usava `request !== null`
 (comparação estrita) para decidir se devia aparecer. Um
@@ -375,10 +438,18 @@ para o usuário final:
 | `Ctrl+Shift+5` | Simula estado `WAITING_CONFIRMATION` |
 | `Ctrl+Shift+6` | Simula estado `LISTENING` (com um `voiceLevel` fixo de teste) |
 | `Ctrl+Shift+7` | Simula estado `SPEAKING` |
+| `Ctrl+Shift+8` | Simula estado `PROCESSING_SPEECH` (v0.8) |
 
 Nenhuma resposta de IA é simulada, e nenhuma transcrição/fala falsa é
 gerada — só estados visuais e o overlay de permissão, para poder validar a
 interface sem depender de uma sessão real nem de microfone/TTS reais.
+
+**Overlay técnico (v0.8, opcional):** também só em `devMode`, um pequeno
+texto no canto superior direito mostra `STATE`/`BUSY`/`VOICE LEVEL` em
+tempo real — só para acelerar desenvolvimento visual, sem precisar
+instrumentar QML toda vez. Nunca aparece fora de `devMode`
+(`tests/test_qml_smoke.py::test_devmode_simulated_states_never_apply_when_devmode_off`
+cobre isso, junto com o resto do dev mode).
 
 `ChatPanel.qml` também ganhou uma `property bool pending` (ligada a
 `bridge.busy` em `Main.qml`): enquanto uma resposta está em andamento,
@@ -403,34 +474,68 @@ do backend, não um spinner genérico nem texto de resposta inventado.
   push-to-talk, transcrição (sucesso/falha), fala (sucesso/falha),
   cancelamento (inclusive interrompendo uma fala em andamento), shutdown.
   Nenhum microfone ou engine de voz real é tocado.
-- `tests/test_application.py` (classes `ApplicationVoice*`, novo no v0.7) —
-  a mesma cobertura, mas pela API pública de `JarvisApplication`: estados
+- `tests/test_application.py` (classes `ApplicationVoice*`) — a mesma
+  cobertura, mas pela API pública de `JarvisApplication`: estados
   `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, transcrição chegando como
   `AppEvent` (nunca enviada à IA sozinha), fala automática condicionada a
   `voice_output_enabled`, guardas de concorrência com o chat, ausência de
   microfone não quebrando o chat normal, shutdown limpo durante
   listening/speaking.
+- **Novo no v0.8** — `tests/test_qml_smoke.py`: `Core` reage a todos os
+  estados simulados em dev mode (`test_core_reflects_devmode_simulated_states`),
+  LISTENING visualmente distinto de THINKING
+  (`test_core_listening_is_visually_distinct_from_thinking`), dev mode não
+  vaza nenhum estado/permissão fake quando desligado
+  (`test_devmode_simulated_states_never_apply_when_devmode_off`), e a janela
+  redimensiona por 1100×700 até 2560×1440 sem gerar warning
+  (`test_window_resizes_across_target_resolutions_without_warnings`).
+- **Novo no v0.8** — `tests/test_bridge.py`: `BridgeVoiceTests` (push-to-talk
+  e fala pelos slots reais do Bridge — `toggleListening`/`stopSpeaking` —
+  com `FakeSTTService`/`FakeTTSService`, não só pela Application Layer
+  diretamente) e `BridgeStreamingPrepTests` (simula `response.started` →
+  múltiplos `response.delta` → confirma que `MessageListModel.update_content()`
+  atualiza a mesma linha progressivamente, sem criar mensagens novas —
+  preparação para streaming real, sem Claude conectado).
 
 ## Limitações desta versão
 
 - STT exige baixar manualmente o modelo Vosk (ver seção "Voz" acima) — sem
-  ele, o botão de microfone fica desabilitado.
+  ele, o botão de microfone fica desabilitado, e a tooltip diz exatamente
+  por quê (mic ausente vs. modelo ausente são mensagens diferentes).
 - Sem wake word / escuta permanente (só push-to-talk, de propósito nesta
   etapa) e sem hotkey global (`Ctrl+Space` só funciona com a janela em foco).
-- A fala automática (`voice_output_enabled`) já funciona de ponta a ponta,
-  mas como o Claude real ainda não está ativado, o que é falado hoje é
-  sempre o texto de fallback/erro amigável, nunca uma resposta inteligente
-  de verdade — isso muda no v0.8.
-- Sem streaming real de texto (o contrato de eventos já suporta;
-  `MessageListModel.update_content()` já existe como ponto de extensão —
-  falta só ligar `response.delta` quando o Agent SDK real estiver conectado).
+- A fala automática (`voice_output_enabled`) já funciona de ponta a ponta
+  (testada com um engine SAPI5 real neste ambiente), mas como o Claude real
+  ainda não está ativado, o que é falado hoje é sempre o texto de
+  fallback/erro amigável, nunca uma resposta inteligente de verdade.
+- Sem streaming real de texto — o Bridge já sabe reagir a um `response.delta`
+  (testado com eventos fake), mas nenhum backend o emite ainda.
 - Sem MCP, sem ferramentas reais, sem Ruflo — tudo isso continua planejado,
   não implementado.
-- Sem tela de configurações, sem temas alternativos, sem persistência de
-  janela (posição/tamanho não são lembrados entre execuções), sem seleção
-  de dispositivo de microfone/voz na UI (usa sempre o padrão do sistema —
-  a estrutura já suporta trocar isso depois, ver `Settings.tts_voice`).
+- Sem cantos de janela arredondados (decisão deliberada — ver "Layout,
+  boot, resize, fullscreen" acima), sem tela de configurações, sem temas
+  alternativos, sem persistência de janela (posição/tamanho não são
+  lembrados entre execuções), sem seleção de dispositivo de microfone/voz
+  na UI (usa sempre o padrão do sistema — a estrutura já suporta trocar
+  isso depois, ver `Settings.tts_voice`).
 - Validação visual "de verdade" (like, olhar para a tela e avaliar
   acabamento, ou realmente falar no microfone) precisa ser feita por quem
   está rodando — os testes automatizados cobrem comportamento e ausência de
-  erros com fakes, não hardware real nem estética.
+  erros com fakes, não hardware real nem estética. TTS foi validado
+  ponta-a-ponta neste ambiente (síntese real + interrupção real); STT não
+  (nenhum modelo foi baixado, por instrução).
+
+## Próximas versões (direção, não implementado)
+
+Registrado aqui só como direção arquitetural — nada disto está implementado
+e a numeração ainda pode mudar:
+
+- **Claude real / API / streaming** — ativar `ANTHROPIC_API_KEY`, validar
+  `ClaudeAgentProvider` com uma sessão de verdade, ligar `response.delta`.
+- **Tools + Permissions** — primeiras ferramentas reais (provavelmente READ
+  primeiro), conectadas ao `PermissionOverlay` que já existe.
+- **MCP** — servidores MCP como integrações externas.
+- **Ruflo / multiagentes** — orquestração multiagente para tarefas
+  complexas, opcional, não obrigatória.
+- **Voz avançada** — wake word, seleção de dispositivo/voz na UI,
+  automações disparadas por voz (sempre atrás de `PermissionService`).

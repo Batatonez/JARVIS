@@ -18,9 +18,12 @@ Window {
     title: "JARVIS"
 
     readonly property bool isFullscreen: visibility === Window.FullScreen
-    // Boot em etapas (~1s no total): núcleo primeiro, depois a região
-    // core+chat, depois status, depois input — em vez de tudo aparecer de
-    // uma vez com o núcleo.
+    // Breakpoint único e simples (v0.8): abaixo disso, StatusPanel prioriza
+    // CORE/AI/VOICE e compacta o resto — não é um sistema de layout CSS-like.
+    readonly property bool compact: width < 1250
+    // Boot em etapas (~1.3s no total): title bar quase instantânea, ponto
+    // semente, núcleo energiza, região core+chat, status, input.
+    property bool titleBooted: false
     property bool rowBooted: false
     property bool statusBooted: false
     property bool inputBooted: false
@@ -62,6 +65,7 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+5"; enabled: bridge.devMode; onActivated: bridge.simulateState("waiting_confirmation") }
     Shortcut { sequence: "Ctrl+Shift+6"; enabled: bridge.devMode; onActivated: bridge.simulateState("listening") }
     Shortcut { sequence: "Ctrl+Shift+7"; enabled: bridge.devMode; onActivated: bridge.simulateState("speaking") }
+    Shortcut { sequence: "Ctrl+Shift+8"; enabled: bridge.devMode; onActivated: bridge.simulateState("processing_speech") }
 
     // Push-to-talk por clique: Ctrl+Space liga/desliga o microfone — só
     // funciona com a janela do JARVIS em foco (Shortcut do Qt é por janela,
@@ -78,7 +82,7 @@ Window {
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
-            GradientStop { position: 0.0; color: Qt.rgba(0.08, 0.14, 0.20, 0.30) }
+            GradientStop { position: 0.0; color: Theme.backgroundSecondary }
             GradientStop { position: 0.5; color: "transparent" }
             GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.30) }
         }
@@ -120,6 +124,9 @@ Window {
             Layout.fillWidth: true
             targetWindow: window
             subtitle: bridge.running ? "CORE ONLINE" : "CORE STARTING"
+            online: bridge.running
+            opacity: window.titleBooted ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
         }
 
         RowLayout {
@@ -137,43 +144,92 @@ Window {
                 // Referencia `window.width` (estável, externo a este layout)
                 // em vez de `parent.width` (o próprio RowLayout que está
                 // sendo calculado) — evita ciclo de rearranjo.
-                Layout.preferredWidth: window.width * 0.42
+                Layout.preferredWidth: window.width * 0.46
                 Layout.fillHeight: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: Theme.spacingLg
 
                 Item { Layout.fillHeight: true }
 
-                JarvisCore {
-                    id: core
+                Item {
+                    id: coreStage
                     Layout.alignment: Qt.AlignHCenter
-                    size: Math.max(240, Math.min(360, window.width * 0.24))
-                    state: bridge.jarvisState
-                    aiConfigured: bridge.aiConfigured
-                    aiSessionActive: bridge.aiSessionActive
-                    voiceLevel: bridge.voiceLevel
+                    implicitWidth: core.implicitWidth
+                    implicitHeight: core.implicitHeight
+
+                    // Ponto semente: aparece primeiro (~t=0), some assim que
+                    // o núcleo de verdade começa a "energizar" — o primeiro
+                    // batimento da sequência de boot.
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 6; height: 6; radius: 3
+                        color: Theme.primaryBright
+                        opacity: core.booted ? 0 : 0.9
+                        scale: core.booted ? 2.4 : 1
+                        Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+                        Behavior on scale { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+                    }
+
+                    JarvisCore {
+                        id: core
+                        objectName: "jarvisCore"
+                        anchors.centerIn: parent
+                        // Cresce com a tela (altura manda, já que a coluna é
+                        // aproximadamente quadrada) — nunca fica minúsculo em
+                        // monitores grandes, nem estoura a coluna em janelas
+                        // pequenas.
+                        size: Math.max(250, Math.min(520, Math.min(window.width, window.height) * 0.38))
+                        state: bridge.jarvisState
+                        aiConfigured: bridge.aiConfigured
+                        aiSessionActive: bridge.aiSessionActive
+                        voiceLevel: bridge.voiceLevel
+                    }
                 }
 
                 Column {
                     Layout.alignment: Qt.AlignHCenter
-                    spacing: 4
-                    Text {
+                    spacing: 6
+
+                    Row {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: bridge.jarvisState.toUpperCase()
-                        color: Theme.stateColor(bridge.jarvisState)
-                        font.family: Theme.fontFamily
-                        font.pixelSize: 13
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: Theme.letterSpacingLabel * 2
-                        Behavior on color { ColorAnimation { duration: Theme.durationNormal } }
+                        spacing: 7
+                        Rectangle {
+                            width: 6; height: 6; radius: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Theme.stateColor(bridge.jarvisState)
+                            Behavior on color { ColorAnimation { duration: Theme.durationNormal } }
+                        }
+                        Text {
+                            text: bridge.jarvisState.toUpperCase()
+                            color: Theme.stateColor(bridge.jarvisState)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: Theme.letterSpacingLabel * 2
+                            Behavior on color { ColorAnimation { duration: Theme.durationNormal } }
+                        }
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: bridge.aiConfigured ? bridge.aiBackend.toUpperCase() : "AI OFFLINE"
+                        text: bridge.aiConfigured ? bridge.aiBackend.toUpperCase() : "AI · NOT CONFIGURED"
                         color: Theme.textFaint
                         font.family: Theme.fontFamily
                         font.pixelSize: 11
                         font.letterSpacing: Theme.letterSpacingLabel
+                    }
+
+                    // Linha de atividade discreta — separa "informação" de
+                    // "ação" (o botão logo abaixo) sem precisar de um
+                    // divisor rígido cortando o HUD.
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 28; height: 1
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: "transparent" }
+                            GradientStop { position: 0.5; color: Theme.borderStrong }
+                            GradientStop { position: 1.0; color: "transparent" }
+                        }
                     }
                 }
 
@@ -218,6 +274,7 @@ Window {
             voiceAvailable: bridge.voiceAvailable
             ttsReady: bridge.ttsReady
             voiceOutputEnabled: bridge.voiceOutputEnabled
+            compact: window.compact
             onVoiceOutputToggleRequested: bridge.setVoiceOutputEnabled(!bridge.voiceOutputEnabled)
             opacity: window.statusBooted ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durationSlow; easing.type: Easing.OutCubic } }
@@ -240,6 +297,14 @@ Window {
                 busy: bridge.busy
                 voiceState: bridge.jarvisState
                 voiceAvailable: bridge.voiceAvailable
+                // Mic ausente e "modelo de STT não instalado" são situações
+                // diferentes (ver frontend/README.md, seção Voz) — a
+                // tooltip do MicButton nunca deve "desaparecer misteriosamente".
+                voiceUnavailableReason: !bridge.microphoneAvailable
+                    ? "Microfone não detectado"
+                    : !bridge.sttReady
+                        ? "Reconhecimento de fala requer modelo (ver frontend/README.md)"
+                        : "Microfone indisponível"
                 speaking: bridge.jarvisState === "speaking"
                 onSendRequested: (text) => bridge.sendMessage(text)
                 onCancelRequested: bridge.cancelCurrentRequest()
@@ -371,18 +436,72 @@ Window {
     }
 
     // ------------------------------------------------------------------
-    // Sequência de boot: núcleo aparece, depois os painéis. Curta (~1s),
-    // e nunca bloqueia o backend — a Application Layer inicia em paralelo,
-    // de forma totalmente independente desta animação cosmética.
+    // Acabamento da janela: borda externa de 1px extremamente sutil — só
+    // decorativa (não consome mouse), não afeta resize/Snap. Cantos
+    // customizados foram deliberadamente deixados de fora nesta versão:
+    // arredondar uma Window frameless exige torná-la translúcida
+    // (WA_TranslucentBackground), o que arrisca o comportamento de
+    // resize/Snap já validado — comportamento funcional > estética.
+    // ------------------------------------------------------------------
+    Rectangle {
+        anchors.fill: parent
+        color: "transparent"
+        border.width: 1
+        border.color: Qt.rgba(0.361, 0.882, 0.902, 0.10)
+        z: 101
+    }
+
+    // ------------------------------------------------------------------
+    // Overlay técnico — só em devMode (JARVIS_DEV=1), nunca para o usuário
+    // final. Não é uma feature: existe só para validar estado visualmente
+    // durante desenvolvimento sem precisar instrumentar QML toda vez.
+    // ------------------------------------------------------------------
+    Column {
+        visible: bridge.devMode
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 48
+        anchors.rightMargin: Theme.spacingMd
+        spacing: 2
+        z: 100
+        opacity: 0.75
+
+        Text {
+            text: "STATE " + bridge.jarvisState
+            color: Theme.textFaint
+            font.family: Theme.fontFamily
+            font.pixelSize: 10
+        }
+        Text {
+            text: "BUSY " + bridge.busy
+            color: Theme.textFaint
+            font.family: Theme.fontFamily
+            font.pixelSize: 10
+        }
+        Text {
+            text: "VOICE LEVEL " + bridge.voiceLevel.toFixed(2)
+            color: Theme.textFaint
+            font.family: Theme.fontFamily
+            font.pixelSize: 10
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sequência de boot (~1.3s): title bar quase instantânea, ponto
+    // semente, núcleo energiza, região core+chat, status, input. Nunca
+    // bloqueia o backend — a Application Layer inicia em paralelo, de
+    // forma totalmente independente desta animação cosmética.
     // ------------------------------------------------------------------
     Component.onCompleted: {
+        titleBootTimer.start()
         coreBootTimer.start()
         rowBootTimer.start()
         statusBootTimer.start()
         inputBootTimer.start()
     }
-    Timer { id: coreBootTimer; interval: 120; onTriggered: core.play() }
-    Timer { id: rowBootTimer; interval: 320; onTriggered: window.rowBooted = true }
-    Timer { id: statusBootTimer; interval: 620; onTriggered: window.statusBooted = true }
-    Timer { id: inputBootTimer; interval: 760; onTriggered: window.inputBooted = true }
+    Timer { id: titleBootTimer; interval: 60; onTriggered: window.titleBooted = true }
+    Timer { id: coreBootTimer; interval: 160; onTriggered: core.play() }
+    Timer { id: rowBootTimer; interval: 420; onTriggered: window.rowBooted = true }
+    Timer { id: statusBootTimer; interval: 820; onTriggered: window.statusBooted = true }
+    Timer { id: inputBootTimer; interval: 1000; onTriggered: window.inputBooted = true }
 }

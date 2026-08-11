@@ -10,6 +10,7 @@ Item {
 
     property Window targetWindow
     property string subtitle: ""
+    property bool online: false
     readonly property bool maximized: targetWindow ? targetWindow.visibility === Window.Maximized : false
 
     implicitHeight: 40
@@ -38,15 +39,26 @@ Item {
         Rectangle {
             width: 7; height: 7; radius: 3.5
             anchors.verticalCenter: parent.verticalCenter
-            color: Theme.cyan
+            color: titleBar.online ? Theme.cyan : Theme.textFaint
+            Behavior on color { ColorAnimation { duration: Theme.durationNormal } }
         }
         Text {
+            anchors.verticalCenter: parent.verticalCenter
             text: "JARVIS"
             color: Theme.textPrimary
             font.family: Theme.fontFamily
             font.pixelSize: 14
             font.weight: Font.DemiBold
             font.letterSpacing: Theme.letterSpacingLabel
+        }
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "PERSONAL INTELLIGENCE SYSTEM"
+            color: Theme.textFaint
+            font.family: Theme.fontFamily
+            font.pixelSize: 9
+            font.letterSpacing: Theme.letterSpacingLabel * 1.2
+            visible: titleBar.width > 620
         }
     }
 

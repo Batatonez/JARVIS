@@ -75,6 +75,62 @@ class QmlSmokeTests(unittest.TestCase):
 
         self.assertEqual(self.warnings, [])
 
+    def test_core_reflects_devmode_simulated_states(self) -> None:
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+        core = root.findChild(QObject, "jarvisCore")
+        self.assertIsNotNone(core)
+
+        for name in ("listening", "thinking", "speaking", "waiting_confirmation", "processing_speech", "error", "idle"):
+            self._bridge.simulateState(name)
+            self.assertEqual(core.property("state"), name)
+
+        self.assertEqual(self.warnings, [])
+
+    def test_core_listening_is_visually_distinct_from_thinking(self) -> None:
+        # Requisito explícito do v0.7/v0.8: LISTENING não pode se confundir
+        # com THINKING (mesmo núcleo, cor de accent diferente).
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+        core = root.findChild(QObject, "jarvisCore")
+
+        self._bridge.simulateState("thinking")
+        QTest.qWait(500)  # Behavior on accent anima por Theme.durationSlow (420ms)
+        thinking_accent = core.property("accent")
+        self._bridge.simulateState("listening")
+        QTest.qWait(500)
+        listening_accent = core.property("accent")
+
+        self.assertNotEqual(thinking_accent, listening_accent)
+        self.assertTrue(core.property("listening"))
+
+    def test_devmode_simulated_states_never_apply_when_devmode_off(self) -> None:
+        application = build_isolated_application(Path(self._tmp.name))
+        bridge = JarvisBridge(application, dev_mode=False)
+        self.engine.rootContext().setContextProperty("bridge", bridge)
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+        core = root.findChild(QObject, "jarvisCore")
+
+        bridge.simulateState("error")
+        bridge.simulateState("listening")
+
+        self.assertEqual(core.property("state"), "idle")
+        overlay = root.findChild(QObject, "permissionOverlay")
+        self.assertIsNone(overlay.property("request"))
+        self.assertEqual(self.warnings, [])
+
+    def test_window_resizes_across_target_resolutions_without_warnings(self) -> None:
+        self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+        root = self.engine.rootObjects()[0]
+
+        for width, height in ((1100, 700), (1280, 720), (1440, 900), (1920, 1080), (2560, 1440)):
+            root.setProperty("width", width)
+            root.setProperty("height", height)
+            QTest.qWait(10)
+
+        self.assertEqual(self.warnings, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ Item {
     signal denied(string requestId)
 
     readonly property color riskColor: request ? Theme.riskColor(request.riskLevel) : Theme.cyan
+    readonly property bool dangerous: request ? request.riskLevel === "dangerous" : false
     // Bug do v0.5: `request !== null` é uma comparação estrita — um
     // `Property("QVariant")` do Qt que devolve `None` do Python chega aqui
     // como `undefined`, não `null`, e em JS `undefined !== null` é sempre
@@ -38,6 +39,19 @@ Item {
         }
     }
 
+    // Glow externo — só para DANGEROUS, reforça que essa decisão pesa mais
+    // que uma READ/ACTION comum, sem precisar de texto extra.
+    Rectangle {
+        anchors.centerIn: card
+        width: card.width + 16
+        height: card.height + 16
+        radius: Theme.radiusLarge + 8
+        color: "transparent"
+        border.width: 8
+        border.color: Qt.rgba(1, 0.357, 0.443, 0.08)
+        visible: overlay.dangerous
+    }
+
     Rectangle {
         id: card
         width: Math.min(440, overlay.width - Theme.spacingXl * 2)
@@ -45,9 +59,10 @@ Item {
         height: column.implicitHeight + Theme.spacingLg * 2
         radius: Theme.radiusLarge
         color: Theme.surfaceElevated
-        border.width: 1.5
+        border.width: overlay.dangerous ? 2 : 1.5
         border.color: overlay.riskColor
         scale: overlay.hasRequest ? 1 : 0.92
+        Behavior on border.width { NumberAnimation { duration: Theme.durationNormal } }
         Behavior on scale { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutBack; easing.overshoot: 1.1 } }
 
         Column {

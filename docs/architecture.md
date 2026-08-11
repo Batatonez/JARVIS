@@ -4,7 +4,7 @@
 
 ## Estado atual em uma frase
 
-**JARVIS v0.7 — Voice Foundation**: o HUD ganhou entrada (STT, push-to-talk) e saída (TTS) de voz, ambas offline (Vosk + SAPI5/Windows), coordenadas por um novo `VoiceService` na Application Layer — ao lado do `JarvisCore`, não dentro dele. A arquitetura de fronteira não mudou: `JarvisApplication` continua sendo a única porta de entrada para qualquer frontend, sobre o `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider` já existentes, sem nenhuma API key configurada neste ambiente de desenvolvimento. Voz é uma *capability* opcional: sem microfone, sem modelo Vosk baixado, ou sem TTS instalado, o JARVIS continua funcionando normalmente por texto — o comportamento padrão observável do chat continua sendo o fallback seguro (`UnavailableAIService`).
+**JARVIS v0.8 — HUD Overhaul/UX 2.0**: mesma arquitetura do v0.7 (nada nesta seção mudou) — esta versão é refinamento visual do HUD (design system em `Theme.qml`, núcleo de IA v3, layout que escala em monitores grandes, boot mais elaborado), sem nenhuma capability nova. `JarvisApplication` continua sendo a única porta de entrada para qualquer frontend, sobre `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider`/`VoiceService` (v0.7) já existentes, sem nenhuma API key configurada neste ambiente de desenvolvimento. Detalhes de UI ficam em [`frontend/README.md`](../frontend/README.md), que é a fonte de verdade sobre o HUD — este documento cobre arquitetura, não acabamento visual.
 
 ## Visão geral (arquitetura-alvo, planejada)
 
@@ -328,9 +328,10 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 
 ## O que já existe vs. o que é planejamento
 
-**IMPLEMENTADO NO v0.5/v0.6/v0.7:**
-- Voz (v0.7): push-to-talk (STT via Vosk, offline), síntese de fala (TTS via SAPI5/Windows, offline), `VoiceService` na Application Layer, estados `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, indicador de nível de voz real, botão de microfone e controle de fala automática no HUD — ver seção "Voice Foundation" acima e [`frontend/README.md`](../frontend/README.md). TTS testado de ponta a ponta neste ambiente (síntese real + interrupção real); STT graciosamente indisponível até o modelo Vosk ser baixado manualmente (nunca automático)
-- HUD gráfico (`frontend/`, PySide6/QML, `python -m frontend`) — núcleo de IA v2 reagindo a estado real (idle/thinking/error/listening/speaking/waiting_confirmation/offline), chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão (v0.6: bug de visibilidade corrigido)
+**IMPLEMENTADO NO v0.5/v0.6/v0.7/v0.8:**
+- HUD Overhaul (v0.8): design system consolidado em `Theme.qml`, núcleo de IA v3 (anel completo + arcos + segmentado + nós orbitais, ondas de saída em SPEAKING, transições orgânicas em todo estado), layout que escala em monitores grandes (250-520px, baseado em `min(largura, altura)` da janela) sem ficar minúsculo, boot em etapas (~1,3s), breakpoint único para status compacto, borda de janela sutil — sem nenhuma capability nova, só acabamento (ver [`frontend/README.md`](../frontend/README.md))
+- Voz (v0.7): push-to-talk (STT via Vosk, offline), síntese de fala (TTS via SAPI5/Windows, offline), `VoiceService` na Application Layer, estados `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, indicador de nível de voz real, botão de microfone e controle de fala automática no HUD — ver seção "Voice Foundation" acima. TTS testado de ponta a ponta neste ambiente (síntese real + interrupção real); STT graciosamente indisponível até o modelo Vosk ser baixado manualmente (nunca automático)
+- HUD gráfico (`frontend/`, PySide6/QML, `python -m frontend`) — chat com indicador de resposta pendente, status, cancelamento, nova conversa, overlay de permissão (v0.6: bug de visibilidade corrigido; v0.8: ênfase extra para DANGEROUS)
 - `MessageListModel.update_content()` (v0.6) — ponto de extensão pronto para streaming futuro, não conectado a nenhum evento real ainda
 - `JarvisBridge` (`frontend/bridge.py`) — ponte fina, orientada a eventos (sem polling), entre QML e `JarvisApplication`
 - Application Layer (`JarvisApplication`, `app/application.py`) — fronteira estável entre Core e qualquer frontend (terminal e HUD), agora incluindo voz
@@ -344,13 +345,13 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 - Fundação de permissões em memória (`app/permissions.py`), com UI de overlay pronta no HUD — não conectada a ferramentas reais; voz não a contorna
 - Terminal migrado para consumir `JarvisApplication`, não mais `JarvisCore` diretamente
 - Tudo o que já era v0.3/v0.4 (Claude Agent SDK, lifecycle, fallback, memória somente-leitura, estados, event bus interno)
-- 151 testes automatizados, todos offline (mocks/fakes, sem chamada real, sem microfone/TTS real, incluindo smoke test de QML offscreen)
+- 161 testes automatizados, todos offline (mocks/fakes, sem chamada real, sem microfone/TTS real, incluindo smoke test de QML offscreen e estados visuais simulados)
 - Core/Application/HUD funcionais sem qualquer API key configurada e sem qualquer dependência de voz instalada
 
 **PREPARADO, MAS NÃO ATIVADO:**
 - Conexão real com Claude (arquitetura pronta; falta `ANTHROPIC_API_KEY` no ambiente)
 - Sessão real de conversa contínua (testada com fakes; não validada com IA real nesta etapa)
-- Fluxo completo voz → Claude → voz (a metade de voz já é real; a "inteligência" no meio depende do v0.8)
+- Fluxo completo voz → Claude → voz (a metade de voz já é real; a "inteligência" no meio depende de uma versão futura ativar o Claude)
 - Streaming real token-a-token (contrato de eventos já existe; falta só a extensão em `ClaudeAgentProvider.ask()` e ligar `response.delta` no HUD)
 - Configuração futura de API key (`.env.example` documenta as variáveis; nenhum valor real existe no repositório)
 

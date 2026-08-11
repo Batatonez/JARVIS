@@ -14,6 +14,7 @@ Item {
     property int maxLength: 4000
     property string voiceState: "idle" // idle | listening | processing_speech
     property bool voiceAvailable: false
+    property string voiceUnavailableReason: "Microfone indisponível"
     property bool speaking: false
     signal sendRequested(string text)
     signal cancelRequested()
@@ -39,6 +40,19 @@ Item {
         textArea.text = textArea.text.trim().length === 0 ? text : (textArea.text + " " + text)
         textArea.cursorPosition = textArea.text.length
         textArea.forceActiveFocus()
+    }
+
+    // Glow de foco extremamente discreto — uma sombra sutil atrás do frame,
+    // não um brilho chapado. Só visível com o campo focado.
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -3
+        radius: Theme.radiusMedium + 3
+        color: "transparent"
+        border.width: 3
+        border.color: Qt.rgba(0.361, 0.882, 0.902, 0.10)
+        opacity: textArea.activeFocus ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
     }
 
     Rectangle {
@@ -96,6 +110,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 voiceState: bar.voiceState
                 available: bar.voiceAvailable
+                unavailableReason: bar.voiceUnavailableReason
                 onClicked: bar.micToggleRequested()
             }
 
@@ -105,7 +120,10 @@ Item {
                 height: 40
                 anchors.verticalCenter: parent.verticalCenter
                 radius: Theme.radiusMedium
-                color: bar.busy ? Theme.danger : bar.speaking ? Theme.blue : (bar.hasText ? Theme.cyan : Theme.surface)
+                color: bar.busy ? Theme.danger
+                    : bar.speaking ? Theme.blue
+                    : bar.hasText ? (sendMouseArea.containsMouse ? Theme.primaryBright : Theme.cyan)
+                    : (sendMouseArea.containsMouse ? Theme.surfaceHover : Theme.surface)
                 Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                 Text {

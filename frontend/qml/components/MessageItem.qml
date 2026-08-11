@@ -30,12 +30,16 @@ Item {
     Column {
         id: column
         x: Theme.spacingMd
-        width: parent.width - Theme.spacingMd
-        spacing: 3
+        width: parent.width - Theme.spacingMd - Theme.spacingSm
+        spacing: 5
 
-        Row {
-            spacing: Theme.spacingSm
+        Item {
+            width: parent.width
+            height: roleLabel.implicitHeight
+
             Text {
+                id: roleLabel
+                anchors.left: parent.left
                 text: item.isUser ? "YOU" : "JARVIS"
                 color: item.accent
                 font.family: Theme.fontFamily
@@ -44,6 +48,8 @@ Item {
                 font.letterSpacing: Theme.letterSpacingLabel
             }
             Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: roleLabel.verticalCenter
                 text: item.timestamp
                 color: Theme.textFaint
                 font.family: Theme.fontFamily

@@ -17,14 +17,17 @@ verdade — e carregar QML sem isso trava. `QGuiApplication` é superset de
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtGui import QGuiApplication
 
-from app.models import PermissionStatus, RiskLevel
+from app.models import AppEvent, PermissionStatus, RiskLevel
 from frontend.bridge import JarvisBridge
-from tests.fakes import FakeAIService
-from tests.helpers import build_isolated_application
+from frontend.message_model import MessageRoles
+from services.voice_service import VoiceService
+from tests.fakes import FakeAIService, FakeSTTService, FakeTTSService
+from tests.helpers import build_isolated_application, build_isolated_core
 
 
 def _ensure_qt_app() -> QGuiApplication:
@@ -271,6 +274,147 @@ class BridgeDevModeTests(unittest.IsolatedAsyncioTestCase):
             bridge.simulateState("permission")
             await _settle()
             self.assertIsNotNone(bridge.pendingPermission)
+        finally:
+            await bridge._shutdown()
+
+    async def test_simulate_state_supports_processing_speech(self) -> None:
+        application = build_isolated_application(Path(self._tmp.name))
+        bridge = JarvisBridge(application, dev_mode=True)
+        await bridge.start()
+        try:
+            bridge.simulateState("processing_speech")
+            self.assertEqual(bridge.jarvisState, "processing_speech")
+        finally:
+            await bridge._shutdown()
+
+
+class BridgeVoiceTests(unittest.IsolatedAsyncioTestCase):
+    """Fluxo de voz pelos slots/properties reais do Bridge — nunca toca
+    microfone/TTS real (FakeSTTService/FakeTTSService)."""
+
+    def setUp(self) -> None:
+        _ensure_qt_app()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _bridge(self, *, stt=None, tts=None, dev_mode: bool = False) -> JarvisBridge:
+        core = build_isolated_core(Path(self._tmp.name))
+        voice = VoiceService(
+            core.settings,
+            core.event_bus,
+            stt=stt if stt is not None else FakeSTTService(),
+            tts=tts if tts is not None else FakeTTSService(),
+        )
+        from app.application import JarvisApplication
+
+        application = JarvisApplication(core, voice_service=voice)
+        return JarvisBridge(application, dev_mode=dev_mode)
+
+    async def test_microphone_available_and_stt_ready_reflect_status(self) -> None:
+        bridge = self._bridge(stt=FakeSTTService(available=True, microphone=False))
+        await bridge.start()
+        try:
+            self.assertTrue(bridge.sttReady)
+            self.assertFalse(bridge.microphoneAvailable)
+            self.assertFalse(bridge.voiceAvailable)
+        finally:
+            await bridge._shutdown()
+
+    async def test_toggle_listening_round_trip_via_real_slots(self) -> None:
+        stt = FakeSTTService(transcript="ligar as luzes")
+        bridge = self._bridge(stt=stt)
+        await bridge.start()
+        try:
+            received: list[str] = []
+            bridge.transcriptionReady.connect(lambda text: received.append(text))
+
+            bridge.toggleListening()
+            for _ in range(30):
+                if bridge.jarvisState == "listening":
+                    break
+                await asyncio.sleep(0.005)
+            self.assertEqual(bridge.jarvisState, "listening")
+
+            bridge.toggleListening()
+            for _ in range(30):
+                if received:
+                    break
+                await asyncio.sleep(0.005)
+
+            self.assertEqual(received, ["ligar as luzes"])
+            self.assertEqual(bridge.jarvisState, "idle")
+        finally:
+            await bridge._shutdown()
+
+    async def test_stop_speaking_slot_interrupts_real_flow(self) -> None:
+        tts = FakeTTSService(delay=5.0)
+        bridge = self._bridge(tts=tts)
+        await bridge.start()
+        try:
+            asyncio.ensure_future(bridge._app.speak("frase longa"))
+            for _ in range(30):
+                if bridge.jarvisState == "speaking":
+                    break
+                await asyncio.sleep(0.005)
+            self.assertEqual(bridge.jarvisState, "speaking")
+
+            bridge.stopSpeaking()
+            for _ in range(30):
+                if bridge.jarvisState == "idle":
+                    break
+                await asyncio.sleep(0.005)
+
+            self.assertEqual(bridge.jarvisState, "idle")
+            self.assertEqual(tts.stop_calls, 1)
+        finally:
+            await bridge._shutdown()
+
+
+class BridgeStreamingPrepTests(unittest.IsolatedAsyncioTestCase):
+    """`response.delta` não existe no backend real ainda (sem Claude
+    conectado) — estes testes simulam o evento diretamente para confirmar
+    que o Bridge/MessageListModel já sabem reagir quando ele existir de
+    verdade (v0.8: preparação, não streaming implementado)."""
+
+    def setUp(self) -> None:
+        _ensure_qt_app()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    async def test_response_delta_updates_existing_message_progressively(self) -> None:
+        fake_ai = FakeAIService(available=True, reply="resposta inicial")
+        bridge = JarvisBridge(build_isolated_application(Path(self._tmp.name), ai_service=fake_ai))
+        await bridge.start()
+        try:
+            await bridge._app.send_message("oi")
+            await _settle()
+            self.assertEqual(bridge.messages.rowCount(), 2)
+            message_id = bridge._app.get_messages()[-1].id
+
+            for delta in ("Ol", "Olá", "Olá, hu", "Olá, humano."):
+                event = AppEvent(
+                    type="response.delta",
+                    timestamp=datetime.now(timezone.utc),
+                    payload={"message_id": message_id, "content": delta},
+                )
+                bridge._handle_event(event)
+
+            last_index = bridge.messages.index(1, 0)
+            self.assertEqual(bridge.messages.data(last_index, MessageRoles.ContentRole), "Olá, humano.")
+            self.assertEqual(bridge.messages.rowCount(), 2)  # não criou linha nova
+        finally:
+            await bridge._shutdown()
+
+    async def test_response_delta_with_unknown_message_id_is_ignored(self) -> None:
+        bridge = JarvisBridge(build_isolated_application(Path(self._tmp.name)))
+        await bridge.start()
+        try:
+            event = AppEvent(
+                type="response.delta",
+                timestamp=datetime.now(timezone.utc),
+                payload={"message_id": "id-inexistente", "content": "x"},
+            )
+            bridge._handle_event(event)  # não deve levantar
         finally:
             await bridge._shutdown()
 

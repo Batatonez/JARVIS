@@ -62,6 +62,8 @@ class JarvisBridge(QObject):
     ttsReadyChanged = Signal()
     voiceOutputEnabledChanged = Signal()
     voiceLevelChanged = Signal()
+    microphoneAvailableChanged = Signal()
+    sttReadyChanged = Signal()
 
     busyRejected = Signal(str)
     internalErrorRaised = Signal(str)
@@ -88,6 +90,8 @@ class JarvisBridge(QObject):
         self._tts_ready = False
         self._voice_output_enabled = False
         self._voice_level = 0.0
+        self._microphone_available = False
+        self._stt_ready = False
 
         self._event_queue: asyncio.Queue | None = None
         self._event_task: asyncio.Task | None = None
@@ -144,6 +148,18 @@ class JarvisBridge(QObject):
             self.voiceErrorRaised.emit(str(event.payload.get("error", "Falha ao transcrever.")))
         elif event.type == "voice.speaking.failed":
             self.voiceErrorRaised.emit(str(event.payload.get("error", "Falha ao falar.")))
+        elif event.type == "response.delta":
+            # Preparação para streaming real (v0.8) — `response.delta` NÃO é
+            # emitido por nenhum backend hoje (nenhum Claude real conectado,
+            # nenhum código em app/application.py produz este evento). Existe
+            # só para o `MessageListModel.update_content()` já ter, desde
+            # agora, um único ponto de entrada óbvio quando um evento desses
+            # existir de verdade — sem precisar reestruturar o Bridge depois.
+            # Testado com eventos fake (tests/test_bridge.py).
+            message_id = event.payload.get("message_id")
+            content = event.payload.get("content")
+            if message_id and content is not None:
+                self._message_model.update_content(str(message_id), str(content))
 
     # ------------------------------------------------------------------
     # Sincronização de estado (sempre disparada por evento, nunca por timer)
@@ -162,6 +178,8 @@ class JarvisBridge(QObject):
         self._set_property("_voice_available", snapshot.voice_available, self.voiceAvailableChanged)
         self._set_property("_tts_ready", snapshot.tts_ready, self.ttsReadyChanged)
         self._set_property("_voice_output_enabled", snapshot.voice_output_enabled, self.voiceOutputEnabledChanged)
+        self._set_property("_microphone_available", snapshot.microphone_available, self.microphoneAvailableChanged)
+        self._set_property("_stt_ready", snapshot.stt_ready, self.sttReadyChanged)
 
     def _set_property(self, attr: str, value: object, signal: Signal) -> None:
         if getattr(self, attr) != value:
@@ -248,6 +266,14 @@ class JarvisBridge(QObject):
     @Property(float, notify=voiceLevelChanged)
     def voiceLevel(self) -> float:
         return self._voice_level
+
+    @Property(bool, notify=microphoneAvailableChanged)
+    def microphoneAvailable(self) -> bool:
+        return self._microphone_available
+
+    @Property(bool, notify=sttReadyChanged)
+    def sttReady(self) -> bool:
+        return self._stt_ready
 
     @Property(bool, constant=True)
     def devMode(self) -> bool:
@@ -350,7 +376,7 @@ class JarvisBridge(QObject):
         if not self._dev_mode:
             return
         name = name.lower()
-        if name in ("idle", "thinking", "error", "waiting_confirmation", "listening", "speaking"):
+        if name in ("idle", "thinking", "error", "waiting_confirmation", "listening", "speaking", "processing_speech"):
             self._set_property("_state", name, self.stateChanged)
             if name == "listening":
                 self._set_property("_voice_level", 0.6, self.voiceLevelChanged)

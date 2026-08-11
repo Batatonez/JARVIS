@@ -11,6 +11,10 @@ Item {
 
     property string voiceState: "idle" // idle | listening | processing_speech
     property bool available: true
+    // Mensagem específica de por que a voz não está disponível (mic
+    // ausente vs. modelo Vosk não instalado são coisas diferentes — ver
+    // frontend/README.md, seção Voz) — nunca "desaparece misteriosamente".
+    property string unavailableReason: "Microfone indisponível"
     signal clicked()
 
     implicitWidth: 40
@@ -24,10 +28,22 @@ Item {
         : (mouseArea.containsMouse ? Theme.textPrimary : Theme.textMuted)
     Behavior on tint { ColorAnimation { duration: Theme.durationFast } }
 
+    // Halo externo discreto, só durante LISTENING — dá presença sem virar
+    // um flash; some instantaneamente fora desse estado.
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -4
+        radius: Theme.radiusMedium + 4
+        color: "transparent"
+        border.width: 4
+        border.color: Qt.rgba(0.608, 0.420, 1.0, 0.10)
+        visible: button.listening
+    }
+
     Rectangle {
         anchors.fill: parent
         radius: Theme.radiusMedium
-        color: button.listening ? Qt.rgba(0.608, 0.420, 1.0, 0.16) : "transparent"
+        color: button.listening ? Qt.rgba(0.608, 0.420, 1.0, 0.16) : (mouseArea.containsMouse && button.available ? Theme.surfaceHover : "transparent")
         border.width: button.listening ? 1 : 0
         border.color: Theme.violet
         Behavior on color { ColorAnimation { duration: Theme.durationFast } }
@@ -102,7 +118,7 @@ Item {
 
     ToolTip.visible: mouseArea.containsMouse
     ToolTip.delay: 500
-    ToolTip.text: !button.available ? "Microfone indisponível"
+    ToolTip.text: !button.available ? button.unavailableReason
         : button.listening ? "Parar gravação (Ctrl+Space)"
         : button.processing ? "Transcrevendo..."
         : "Gravar (Ctrl+Space)"
