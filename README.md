@@ -72,6 +72,8 @@ O terminal continua falando direto com `JarvisApplication` (sem `AccountManager`
 
 Detalhes completos, incluindo o que está implementado vs. preparado vs. planejado (e a direção futura com Ruflo para orquestração multiagente), em [`docs/architecture.md`](docs/architecture.md). API pública da Application Layer em [`docs/application-api.md`](docs/application-api.md); arquitetura do HUD em [`frontend/README.md`](frontend/README.md).
 
+**Fundação experimental (pré-v1.0, não conectada ao app ainda):** um `ProviderRouter` (`services/providers/`) para o JARVIS decidir provider/modelo/custo/fallback de IA sem depender do model routing interno do Ruflo — ver [`docs/providers.md`](docs/providers.md) e [`docs/ruflo-integration.md`](docs/ruflo-integration.md).
+
 ## Estrutura de pastas
 
 | Pasta | Responsabilidade |

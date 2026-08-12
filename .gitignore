@@ -70,6 +70,25 @@ Thumbs.db
 # --- Claude Code (config local, não compartilhada) ---
 .claude/settings.local.json
 
+# --- Ruflo/claude-flow (ferramenta de desenvolvimento, ver docs/ruflo-integration.md) ---
+# Runtime/estado/cache do daemon local — regenerável, específico desta
+# máquina, nunca reproduzível entre ambientes: agentes, métricas, políticas,
+# logs, PID, estado de swarm. Nunca contém segredos por si só, mas também
+# nunca deve ir para o Git (é dado de sessão, não configuração).
+.claude-flow/
+# SQLite/AgentDB do Ruflo (memória vetorial, estado do bandit de roteamento,
+# backups automáticos) — mesmo raciocínio de `*.db` acima, mais explícito
+# porque vive fora do padrão `data/` do JARVIS.
+.swarm/
+# Pacote de agentes/skills/commands/hooks instalado automaticamente pelo
+# `ruflo init` (não autorado pelo JARVIS) — inclui scripts de hook
+# (`.claude/helpers/*.sh`, `*.cjs`, `*.mjs`, entre eles um `auto-commit.sh`)
+# que não foram auditados para uso neste projeto. Ignorado por inteiro por
+# ora; quando o JARVIS passar a ter agentes/skills PRÓPRIOS em `.claude/`,
+# adicione exceções específicas (`!.claude/agents/jarvis-*`) em vez de
+# remover este bloco inteiro.
+.claude/
+
 # --- Build / artefatos ---
 *.exe
 *.msi
