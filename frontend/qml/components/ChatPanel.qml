@@ -39,6 +39,7 @@ Item {
 
     ListView {
         id: listView
+        objectName: "chatListView"  // usado pelo smoke test de QML para inspecionar os delegates
         anchors.fill: parent
         visible: panel.hasMessages
         spacing: Theme.spacingMd
@@ -49,11 +50,19 @@ Item {
         onMovementEnded: stickToBottom = atYEnd
         onContentHeightChanged: if (stickToBottom) Qt.callLater(listView.positionViewAtEnd)
 
+        // As propriedades vêm dos *role names* do MessageListModel
+        // (`isUser`, `content`, `timestamp` — ver frontend/message_model.py),
+        // injetadas automaticamente pelo Qt porque o MessageItem as declara
+        // como `required property`.
+        //
+        // NÃO reintroduzir `isUser: model.isUser` (e afins) aqui: a partir do
+        // Qt 6, um delegate com required properties deixa de receber o objeto
+        // de contexto `model`, então esses bindings resolvem para `undefined`
+        // e falham em silêncio — `content` virava "" (mensagem sem texto) e
+        // `isUser` virava false (toda mensagem rotulada "JARVIS", inclusive as
+        // do usuário). Foi exatamente o bug corrigido na v1.1.
         delegate: MessageItem {
             width: listView.width
-            isUser: model.isUser
-            content: model.content
-            timestamp: model.timestamp
         }
 
         add: Transition {

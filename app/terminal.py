@@ -21,7 +21,7 @@ from app.commands import JarvisExit
 logger = logging.getLogger(__name__)
 
 BANNER = """JARVIS
-Core v1.0
+Core v1.1
 
 Sistema iniciado.
 Digite uma mensagem ou /help.

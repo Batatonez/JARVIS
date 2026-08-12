@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Versão de schema que este código espera. Incrementar SEMPRE que uma
 # migração nova for adicionada a `_MIGRATIONS`.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MigrationError(Exception):
@@ -133,6 +133,35 @@ def _migrate_session_tokens(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
 
 
+# --- v3 — v1.1: memória de longo prazo por usuário -------------------------
+# Separada de `messages` de propósito: mensagem pertence a UMA conversa;
+# memória pertence ao USUÁRIO e atravessa todas as conversas (ver
+# services/long_term_memory.py e docs/architecture.md).
+_MIGRATION_3_DDL = """
+CREATE TABLE IF NOT EXISTS user_memories (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    -- Chave de deduplicação: normalização do conteúdo (ver
+    -- LongTermMemoryRepository._dedup_key). Um UNIQUE por (user_id, dedup_key)
+    -- é o que impede "Meu nome é Davi" virar 12 memórias iguais.
+    dedup_key TEXT NOT NULL,
+    source_conversation_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_memories_dedup
+    ON user_memories(user_id, dedup_key);
+CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_id);
+"""
+
+
+def _apply_migration_3(connection: sqlite3.Connection) -> None:
+    for statement in _statements(_MIGRATION_3_DDL):
+        connection.execute(statement)
+
+
 def _statements(script: str) -> list[str]:
     """Divide um script DDL em statements. Deliberadamente ingênuo (split em
     `;`) — só é seguro porque estes scripts não têm literal de string nem
@@ -165,6 +194,7 @@ def _apply_migration_2(connection: sqlite3.Connection) -> None:
 _MIGRATIONS = (
     _apply_migration_1,
     _apply_migration_2,
+    _apply_migration_3,
 )
 
 

@@ -26,7 +26,7 @@ explícito) do que uma fila implícita.
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -54,8 +54,20 @@ logger = logging.getLogger(__name__)
 
 
 class JarvisApplication:
-    def __init__(self, core: JarvisCore, *, voice_service: VoiceService | None = None) -> None:
+    def __init__(
+        self,
+        core: JarvisCore,
+        *,
+        voice_service: VoiceService | None = None,
+        memory_context_provider: "Callable[[str], str] | None" = None,
+    ) -> None:
         self._core = core
+        # v1.1 — devolve a memória de longo prazo relevante para a mensagem
+        # atual, já formatada como texto. Injetado pelo `AccountManager`
+        # (que sabe quem é o usuário logado); `None` no terminal, que não
+        # tem contas. A Application Layer continua sem saber o que é um
+        # usuário ou um banco — só chama a função.
+        self._memory_context_provider = memory_context_provider
         self._conversation = Conversation(max_messages=core.settings.max_conversation_messages)
         self._current_request_task: asyncio.Task[str] | None = None
         self._subscribers: list[asyncio.Queue[AppEvent]] = []
@@ -154,7 +166,7 @@ class JarvisApplication:
             failure["error"] = str(payload.get("error", ""))
 
         self._core.event_bus.subscribe("ai.request.failed", _capture_failure)
-        task: asyncio.Task[str] = asyncio.ensure_future(self._core.handle_input(text))
+        task: asyncio.Task[str] = asyncio.ensure_future(self._core.handle_input(self._build_ai_input(text)))
         self._current_request_task = task
         try:
             raw_reply = await task
@@ -188,6 +200,27 @@ class JarvisApplication:
         finally:
             self._core.event_bus.unsubscribe("ai.request.failed", _capture_failure)
             self._current_request_task = None
+
+    def _build_ai_input(self, text: str) -> str:
+        """Texto que vai para a IA — a mensagem do usuário, precedida da
+        memória de longo prazo relevante quando houver (v1.1).
+
+        Só o que vai para a IA é aumentado: a mensagem **persistida** e a
+        exibida no chat continuam sendo exatamente o que o usuário escreveu
+        (`self._conversation.add(...)` acontece antes disto, com `text` cru).
+
+        Comandos (`/status`, `/new`, ...) nunca são aumentados: prefixar
+        qualquer coisa faria o `CommandRegistry` deixar de reconhecê-los."""
+        if self._memory_context_provider is None or CommandRegistry.is_command(text):
+            return text
+        try:
+            memory_block = self._memory_context_provider(text)
+        except Exception:
+            logger.exception("Falha ao montar contexto de memória; seguindo sem ele.")
+            return text
+        if not memory_block:
+            return text
+        return f"{memory_block}\n\n---\n\nMensagem atual do usuário:\n{text}"
 
     async def cancel_current_request(self) -> bool:
         """Cancela a requisição em andamento, se houver. Usa

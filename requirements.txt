@@ -2,6 +2,14 @@
 # para conectar o ClaudeAgentProvider.
 claude-agent-sdk>=0.2.134,<1.0.0
 
+# python-dotenv — carrega `<raiz>/.env` automaticamente na inicialização
+# (config/env_loader.py), com precedência ambiente > .env > default.
+# Declarado explicitamente a partir da v1.1: já vinha instalado como
+# dependência transitiva, e depender disso sem declarar é frágil. Há um
+# fallback mínimo em env_loader.py caso o pacote não esteja presente, então
+# o JARVIS abre mesmo sem ele.
+python-dotenv>=1.0,<2.0
+
 # PySide6 (Qt for Python) — frontend/HUD (v0.5). Inclui QtQuick/QML, Qt
 # Quick Shapes/Effects, e PySide6.QtAsyncio (integração oficial Qt+asyncio,
 # usada em frontend/launcher.py — nenhuma dependência extra de terceiros

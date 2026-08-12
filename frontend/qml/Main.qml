@@ -270,9 +270,16 @@ Window {
                             Behavior on color { ColorAnimation { duration: Theme.durationNormal } }
                         }
                     }
+                    // v1.1: estado público da IA, não o nome do provider.
+                    // "OPENROUTER (FREE)" é detalhe técnico — continua
+                    // disponível em log/diagnóstico/testes (`bridge.aiBackend`),
+                    // mas não é o que o usuário final precisa ler aqui.
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: bridge.aiConfigured ? bridge.aiBackend.toUpperCase() : "AI · NOT CONFIGURED"
+                        text: !bridge.aiConfigured ? "AI · NOT CONFIGURED"
+                            : bridge.jarvisState === "error" ? "AI · ERROR"
+                            : bridge.jarvisState === "thinking" ? "AI · THINKING"
+                            : "AI · CONFIGURED"
                         color: Theme.textFaint
                         font.family: Theme.fontFamily
                         font.pixelSize: 11
@@ -315,6 +322,7 @@ Window {
 
         StatusPanel {
             id: statusPanel
+            objectName: "statusPanel"
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spacingXl
             Layout.topMargin: Theme.spacingLg
@@ -322,7 +330,7 @@ Window {
             memoryAvailable: bridge.memoryAvailable
             aiConfigured: bridge.aiConfigured
             aiSessionActive: bridge.aiSessionActive
-            aiBackend: bridge.aiBackend
+            jarvisState: bridge.jarvisState
             voiceAvailable: bridge.voiceAvailable
             ttsReady: bridge.ttsReady
             voiceOutputEnabled: bridge.voiceOutputEnabled

@@ -25,7 +25,7 @@ from pathlib import Path
 from app.application import JarvisApplication
 from app.core import JarvisCore
 from app.entitlements import Entitlements, entitlements_for
-from app.models import AppError, AppErrorCode, AppEvent, ConversationSummary, User
+from app.models import AppError, AppErrorCode, AppEvent, ConversationSummary, Message, MessageRole, User
 from config.settings import Settings
 from services import memory_migration, session_store
 from services.ai_service import AIService
@@ -33,7 +33,13 @@ from services.conversation_repository import ConversationRepository, derive_titl
 from services.email_service import EmailService, create_email_service
 from services.email_verification_repository import EmailVerificationRepository, VerificationChallenge
 from services.email_verification_service import EmailVerificationService, VerificationRequestResult
+from services.context_builder import sanitize_context
 from services.local_database import connect
+from services.long_term_memory import (
+    LongTermMemoryRepository,
+    extract_memories,
+    format_memories_for_context,
+)
 from services.memory_service import MemoryService
 from services.session_repository import SessionRepository
 from services.user_repository import (
@@ -79,6 +85,7 @@ class AccountManager:
         self._users = UserRepository(self._conn)
         self._sessions = SessionRepository(self._conn)
         self._conversations = ConversationRepository(self._conn)
+        self._memories = LongTermMemoryRepository(self._conn)
         self._ai_service_factory = ai_service_factory
         self._voice_service_factory = voice_service_factory
         self.verification = EmailVerificationService(
@@ -269,7 +276,14 @@ class AccountManager:
         ai_service = self._ai_service_factory() if self._ai_service_factory else None
         self.core = JarvisCore(settings=self.settings, memory_service=memory_service, ai_service=ai_service)
         voice_service = self._voice_service_factory(self.core) if self._voice_service_factory else None
-        self.app = JarvisApplication(self.core, voice_service=voice_service)
+        self.app = JarvisApplication(
+            self.core,
+            voice_service=voice_service,
+            # v1.1 — é aqui que a memória de longo prazo atravessa conversas:
+            # a Application Layer não sabe quem é o usuário, então quem
+            # resolve isso é o AccountManager, que sabe.
+            memory_context_provider=self._memory_context_for,
+        )
         await self.app.start()
 
         self._event_queue = self.app.subscribe()
@@ -376,3 +390,54 @@ class AccountManager:
             saved = self._conversations.save_message(self._current_conversation_id, self._current_user.id, message)
             if saved:
                 self._persisted_message_ids.add(message.id)
+                self._extract_long_term_memory(message)
+
+    def _extract_long_term_memory(self, message: Message) -> None:
+        """Guarda fatos duráveis ditos pelo usuário (v1.1). Só mensagens do
+        USUÁRIO: o que a IA respondeu não é fato sobre o usuário, e memorizar
+        isso realimentaria alucinação. Falha aqui nunca derruba o chat."""
+        if message.role is not MessageRole.USER or self._current_user is None:
+            return
+        try:
+            for category, content in extract_memories(message.content):
+                self._memories.remember(
+                    user_id=self._current_user.id,
+                    category=category,
+                    content=content,
+                    source_conversation_id=self._current_conversation_id,
+                )
+                logger.info("Memória de longo prazo registrada (%s).", category.value)
+        except Exception:
+            logger.exception("Falha ao extrair memória de longo prazo; conversa segue normalmente.")
+
+    # ------------------------------------------------------------------
+    # Memória de longo prazo (v1.1)
+    # ------------------------------------------------------------------
+
+    def _memory_context_for(self, message: str) -> str:
+        """Memória relevante do usuário LOGADO, formatada para o contexto.
+
+        O `user_id` vem sempre de `self._current_user` — nunca de algo que
+        a Application Layer ou o frontend possa influenciar. É isso que
+        garante que a memória de um usuário jamais entre no contexto de
+        outro (testado em `tests/test_long_term_memory.py`)."""
+        if self._current_user is None:
+            return ""
+        try:
+            relevant = self._memories.relevant_for(user_id=self._current_user.id, query=message)
+        except Exception:
+            logger.exception("Falha ao recuperar memória de longo prazo; seguindo sem ela.")
+            return ""
+        # A sanitização de segredos continua valendo: este texto se junta ao
+        # que já passa por `context_builder` no system prompt.
+        return sanitize_context(format_memories_for_context(relevant))
+
+    def list_memories(self):
+        if self._current_user is None:
+            return []
+        return self._memories.list_memories(self._current_user.id)
+
+    def forget_memory(self, memory_id: str) -> bool:
+        if self._current_user is None:
+            return False
+        return self._memories.forget(user_id=self._current_user.id, memory_id=memory_id)

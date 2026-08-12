@@ -20,7 +20,7 @@ class CommandsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_reports_version_state_and_services(self) -> None:
         response = await self.core.handle_input("/status")
-        self.assertIn("1.0.0", response)
+        self.assertIn("1.1.0", response)
         self.assertIn("idle", response)
         self.assertIn("Memória: disponível", response)
         self.assertIn("IA: não configurada", response)

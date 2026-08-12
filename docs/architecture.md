@@ -4,6 +4,8 @@
 
 ## Estado atual em uma frase
 
+**JARVIS v1.1 — correções de uso real**: sobre a v1.0, corrige o que apareceu usando o app de verdade — o bug das mensagens vazias/rotuladas erradas no chat, memória que não atravessava conversas, `.env` que não era carregado sozinho, e o status de IA técnico demais na tela. Nada de redesign, nenhum provider novo. Ver "Memória de longo prazo" e "Configuração via `.env`" abaixo.
+
 **JARVIS v1.0 — AI integrada e hardening**: a cadeia de IA passou a ser real — `JarvisApplication → Orchestrator → AIService → ProviderRouter → OpenRouter → modelo` — com o JARVIS (não o Ruflo) decidindo provider/modelo/custo e `free_only` ligado por padrão. Sobre isso, a v1.0 endurece o que a v0.9 criou: token de sessão só como hash no banco (migrado sem invalidar sessões), backoff contra força bruta, verificação real de e-mail, migração de schema versionada e transacional, e sanitização do contexto que sai da máquina. O terminal continua sem contas. Detalhes de UI ficam em [`frontend/README.md`](../frontend/README.md); segurança em [`docs/security.md`](security.md); Provider Router em [`docs/providers.md`](providers.md).
 
 ## Visão geral (arquitetura-alvo, planejada)
@@ -145,6 +147,18 @@ AccountManager
 
 **Banco de dados**: SQLite via `sqlite3` da biblioteca padrão (`services/local_database.py`), sem ORM — tabelas `users`, `sessions`, `conversations`, `messages` e (v1.0) `email_verification_tokens`, com `PRAGMA foreign_keys = ON` e toda query parametrizada (`?`), nunca string interpolada. Vive em `settings.db_path` (`data/jarvis.db`), fora do Git.
 
+## Configuração via `.env` (v1.1)
+
+`config/env_loader.py`, chamado **no topo de `config/settings.py`**, antes da definição do dataclass. Isso não é detalhe de estilo: os defaults de `Settings` são `os.environ.get(...)` avaliados quando a classe é criada — carregar o `.env` depois disso não teria efeito nenhum. Colocando a chamada lá, nenhum ponto de entrada (`main.py`, `python -m frontend`, script) consegue esquecer.
+
+Precedência: **variável já no ambiente > `.env` > default do código** (`override=False`). O `.env` nunca sobrescreve o que o usuário definiu explicitamente.
+
+Usa `python-dotenv` (declarado em `requirements.txt` a partir da v1.1 — já vinha instalado como dependência transitiva, e depender disso sem declarar é frágil), com um fallback mínimo interno para o caso do pacote não estar presente: o JARVIS abre de qualquer jeito.
+
+**Testes são herméticos.** `load_project_env()` se recusa a ler o `.env` quando detecta um runner de teste (`unittest`/`pytest` em `sys.modules`, ou `JARVIS_DISABLE_DOTENV=1`) **e** remove as variáveis sensíveis do processo. Sem isso, a suíte passaria a enxergar as credenciais reais do desenvolvedor e poderia gastar requisição ou enviar e-mail de verdade. A detecção por `sys.modules` é o que garante isso independente de ordem de import — `tests/__init__.py` sozinho roda tarde demais, porque um módulo de teste pode importar `config.settings` antes de `tests.helpers`.
+
+**Valores em branco são tolerados**: `_env_int`/`_env_float`/`_env_flag` caem no default. Necessário porque o `.env.example` traz `JARVIS_SMTP_PORT=` etc. vazios de propósito — antes disso, copiar o arquivo de exemplo (que é o que a documentação manda fazer) derrubava o app com `int('')` já no import.
+
 **Migrações versionadas (v1.0)**: o schema é versionado por `PRAGMA user_version` e evolui por uma lista ordenada de migrações, **uma transação por migração**. Se uma falhar, o `ROLLBACK` devolve o banco ao estado anterior e o erro sobe como `MigrationError` — nunca fica meio-migrado, e **nunca** apagamos/recriamos o banco para resolver divergência de schema. A migração v1 → v2 (v0.9 → v1.0) adiciona e-mail/verificação/contadores de força bruta e converte `sessions.token` (texto puro) em `sessions.token_hash` calculando o SHA-256 dos tokens existentes em Python — de modo que **nenhuma sessão ativa foi invalidada** (validado contra o banco real: o auto-login continuou funcionando após a migração).
 
 **Senha**: nunca armazenada em texto puro. `services/password_hashing.py` usa `hashlib.scrypt` (biblioteca padrão, um dos KDFs recomendados pelo OWASP Password Storage Cheat Sheet junto com Argon2id) — salt aleatório de 16 bytes via `secrets`, custo `N=2^15, r=8, p=1`, comparação em tempo constante via `hmac.compare_digest`, formato auto-descritivo (`scrypt$n$r$p$salt$hash`). Escolhido em vez de `bcrypt`/`argon2-cffi` para não somar dependência externa nova — `scrypt` já é stdlib.
@@ -160,6 +174,22 @@ AccountManager
 **Histórico visual vs. sessão real do Claude — distinção importante**: `JarvisApplication.load_conversation_history()` (chamado ao abrir uma conversa salva) só repovoa o `Conversation` em RAM para exibição — **não** reconecta uma sessão real do `ClaudeSDKClient` com aquele contexto (não existe Claude real ainda para reconectar). Isso está documentado explicitamente no docstring do método para nunca ser confundido no futuro com "restaurar memória de conversa" de verdade.
 
 **Memória por conta**: cada usuário tem `data/users/<user-id>/memory/{profile.md,preferences.md}` (`services/memory_migration.py::user_memory_dir()`) — nunca o username diretamente no caminho (evita path traversal via nome de usuário malicioso; o ID interno, um UUID, é que vira nome de pasta). A memória legacy pré-contas (`memory/profile.md`/`memory/preferences.md`, v0.1-v0.8) é migrada — **copiada, nunca movida/apagada** — para a primeira conta criada no ambiente (`UserRepository.has_any_user()` decide isso antes de criar a conta), e só se o destino ainda não tiver arquivo próprio (idempotente, nunca sobrescreve).
+
+**Memória de longo prazo por usuário (v1.1)**: `services/long_term_memory.py`. Separada do histórico de conversa de propósito — mensagem pertence a UMA conversa; memória pertence ao USUÁRIO e atravessa todas:
+
+```
+User
+├── Conversation A   (messages — de um chat só)
+├── Conversation B
+└── LongTermMemory   (user_memories — fatos que valem em qualquer chat)
+```
+
+- **Extração conservadora e local**: heurística por padrões (`meu nome é X`, `prefiro Y`, `lembre que Z`), sem nenhuma chamada de IA — memorizar não pode custar dinheiro nem depender de rede. A maioria das mensagens não vira memória, e isso é o esperado: "Quanto é 5+5?" nunca vira. Perguntas são explicitamente excluídas ("Qual é meu nome?" contém "meu nome" mas não afirma nada). O casamento é feito sobre o texto **sem acento** (dobra 1:1 que preserva índices), então "Meu nome e Davi" funciona igual a "Meu nome é Davi" — mas o recorte vem do original, preservando acentuação.
+- **Só mensagens do usuário** viram memória. Memorizar o que a IA respondeu realimentaria alucinação.
+- **Deduplicação por `dedup_key`** (conteúdo normalizado) com `UNIQUE(user_id, dedup_key)` — "Meu nome é Davi" e "me chamo Davi" não geram duas entradas.
+- **NÃO mandamos todos os chats para o provider.** Só as memórias mais relevantes (ranking local por sobreposição de palavras, teto de 20) entram no contexto — privacidade, custo, tokens e relevância.
+- **Isolamento**: `AccountManager._memory_context_for()` sempre usa `self._current_user.id`, nunca um ID vindo da Application Layer ou do frontend. Toda query é escopada por `user_id`, inclusive `forget()`.
+- **A mensagem persistida continua limpa**: a memória entra só no texto enviado à IA (`JarvisApplication._build_ai_input`), nunca no que é exibido/gravado. Comandos nunca são aumentados — prefixar algo faria o `CommandRegistry` deixar de reconhecê-los.
 
 **Verificação de e-mail (v1.0)**: `services/email_verification_service.py` + `_repository.py` + `services/email_service.py` (SMTP genérico, nunca amarrado a um provedor específico). Código de 6 dígitos, hash `scrypt` no banco (reusando `password_hashing.py` — nenhuma criptografia nova), expira em 5 min, reenvio após 60s, uso único, novo invalida o anterior, máximo de 5 tentativas. **Todas as regras de tempo são validadas no backend** contra timestamps persistidos — o QML só decrementa a exibição, então fechar e reabrir o app mostra o tempo real restante. Sem SMTP configurado, o serviço reporta `EMAIL_SERVICE_NOT_CONFIGURED` em vez de fingir envio. Uma conta não verificada **continua funcionando** (a verificação existe para tornar a conta recuperável no futuro, não como paywall — bloquear o app numa conta local sem backend só puniria quem não configurou SMTP).
 

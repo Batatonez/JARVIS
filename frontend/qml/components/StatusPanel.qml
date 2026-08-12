@@ -17,7 +17,9 @@ Item {
     property bool memoryAvailable: false
     property bool aiConfigured: false
     property bool aiSessionActive: false
-    property string aiBackend: "nenhum"
+    // Estado do JARVIS (`bridge.jarvisState`) — usado só para diferenciar
+    // THINKING/ERROR no indicador de IA.
+    property string jarvisState: "idle"
     property bool voiceAvailable: false
     property bool ttsReady: false
     property bool voiceOutputEnabled: false
@@ -49,10 +51,20 @@ Item {
             value: panel.running ? "ONLINE" : "OFFLINE"
             tone: panel.running ? "ready" : "muted"
         }
+        // v1.1: o indicador mostra ESTADO, não o nome técnico do provider.
+        // Qual provider/modelo está servindo (e se é rota gratuita) continua
+        // disponível internamente — em log, diagnóstico e testes, via
+        // `bridge.aiBackend` — só não é ruído na tela do usuário final.
         StatusIndicator {
             label: "AI"
-            value: panel.aiConfigured ? panel.aiBackend.toUpperCase() : "NOT CONFIGURED"
-            tone: panel.aiConfigured ? "ready" : "muted"
+            value: !panel.aiConfigured ? "NOT CONFIGURED"
+                : panel.jarvisState === "error" ? "ERROR"
+                : panel.jarvisState === "thinking" ? "THINKING"
+                : "CONFIGURED"
+            tone: !panel.aiConfigured ? "muted"
+                : panel.jarvisState === "error" ? "danger"
+                : panel.jarvisState === "thinking" ? "active"
+                : "ready"
         }
         StatusIndicator {
             label: "VOICE"

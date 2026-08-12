@@ -17,12 +17,13 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QObject, QUrl  # noqa: E402
+from PySide6.QtCore import Q_ARG, Q_RETURN_ARG, QMetaObject, QObject, QUrl  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
+from PySide6.QtQuick import QQuickItem  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
-from app.models import RiskLevel  # noqa: E402
+from app.models import Message, MessageRole, RiskLevel  # noqa: E402
 from tests.helpers import build_isolated_bridge, build_isolated_voice_service  # noqa: E402
 
 QML_DIR = Path(__file__).resolve().parent.parent / "frontend" / "qml"
@@ -222,6 +223,114 @@ class QmlSmokeTests(unittest.IsolatedAsyncioTestCase):
         overlay = root.findChild(QObject, "permissionOverlay")
         self.assertIsNone(overlay.property("request"))
         self.assertEqual(self.warnings, [])
+
+    # ------------------------------------------------------------------
+    # Chat: delegates recebem conteúdo e role de verdade (regressão v1.1)
+    # ------------------------------------------------------------------
+
+    def _chat_delegates(self, root) -> list:
+        """Os itens realmente instanciados pelo ListView do chat.
+
+        Usa `itemAtIndex()` (invocável) em vez de varrer a árvore de objetos:
+        delegates de um ListView são criados sob demanda e não aparecem como
+        `findChildren()` do ListView."""
+        list_view = root.findChild(QObject, "chatListView")
+        self.assertIsNotNone(list_view, "ListView do chat não encontrada")
+        items = []
+        for row in range(list_view.property("count")):
+            item = QMetaObject.invokeMethod(
+                list_view, "itemAtIndex", Q_RETURN_ARG(QQuickItem), Q_ARG(int, row)
+            )
+            if item is not None:
+                items.append(item)
+        return items
+
+    async def test_chat_delegates_receive_content_and_role(self) -> None:
+        """Regressão da v1.1 — o bug das "mensagens vazias".
+
+        `ChatPanel` atribuía `isUser: model.isUser` / `content: model.content`
+        num delegate que declara `required property`. A partir do Qt 6, um
+        delegate com required properties deixa de receber o objeto de contexto
+        `model`, então esses bindings resolviam para `undefined`: `content`
+        virava "" (card sem texto) e `isUser` virava false (TODA mensagem
+        rotulada "JARVIS", inclusive a do próprio usuário).
+
+        Este teste falha se alguém reintroduzir aquele padrão."""
+        root = self._load()
+        await self._login()
+        QTest.qWait(50)
+
+        self._bridge._message_model.sync(
+            [
+                Message(role=MessageRole.USER, content="Meu nome é Davi"),
+                Message(role=MessageRole.ASSISTANT, content="Olá, Davi!"),
+            ]
+        )
+        QTest.qWait(250)
+
+        delegates = self._chat_delegates(root)
+        self.assertEqual(len(delegates), 2)
+
+        # Mensagem do usuário -> "YOU", com o texto exato que foi enviado.
+        self.assertTrue(delegates[0].property("isUser"))
+        self.assertEqual(delegates[0].property("content"), "Meu nome é Davi")
+        # Resposta -> "JARVIS", também com texto.
+        self.assertFalse(delegates[1].property("isUser"))
+        self.assertEqual(delegates[1].property("content"), "Olá, Davi!")
+
+        # Nenhum delegate pode ficar sem texto.
+        for delegate in delegates:
+            self.assertNotEqual(delegate.property("content"), "")
+
+        self.assertEqual(self.warnings, [])
+
+    async def test_chat_delegates_produce_no_binding_warnings(self) -> None:
+        """O sintoma original do bug era exatamente um warning
+        `Unable to assign [undefined] to ...` por delegate criado."""
+        root = self._load()
+        await self._login()
+        self._bridge._message_model.sync(
+            [Message(role=MessageRole.USER, content="oi")]
+        )
+        QTest.qWait(250)
+
+        undefined_warnings = [w for w in self.warnings if "undefined" in w.lower()]
+        self.assertEqual(undefined_warnings, [])
+        self.assertEqual(self.warnings, [])
+
+    async def test_ai_status_is_public_not_technical(self) -> None:
+        """v1.1: o HUD mostra CONFIGURED/NOT CONFIGURED/THINKING/ERROR, nunca
+        o nome do provider ("OPENROUTER (FREE)") — que continua disponível
+        internamente via `bridge.aiBackend` para log/diagnóstico/teste."""
+        root = self._load()
+        await self._login()
+        QTest.qWait(50)
+
+        status_panel = root.findChild(QObject, "statusPanel")
+        self.assertIsNotNone(status_panel)
+
+        # Sem provider configurado nos testes -> NOT CONFIGURED.
+        self.assertFalse(self._bridge.aiConfigured)
+        texts = self._visible_texts(root)
+        self.assertNotIn("OPENROUTER", " ".join(texts).upper())
+        self.assertTrue(any("NOT CONFIGURED" in t.upper() for t in texts))
+
+        # O dado técnico continua acessível pelo Bridge (não some do backend).
+        self.assertIsInstance(self._bridge.aiBackend, str)
+        self.assertEqual(self.warnings, [])
+
+    def _visible_texts(self, root) -> list:
+        """Todo `text` de itens da árvore — para afirmar sobre o que a tela
+        realmente mostra, em vez de confiar num binding específico."""
+        found = []
+        for child in root.findChildren(QObject):
+            meta = child.metaObject()
+            names = {meta.property(i).name() for i in range(meta.propertyCount())}
+            if "text" in names:
+                value = child.property("text")
+                if isinstance(value, str) and value:
+                    found.append(value)
+        return found
 
     async def test_window_resizes_across_target_resolutions_without_warnings(self) -> None:
         root = self._load()
