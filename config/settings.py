@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "0.9.0"
+    core_version: str = "1.0.0"
 
     project_root: Path = PROJECT_ROOT
     # Memória legacy (pré-contas, v0.1-v0.8) — nunca apagada, só lida uma vez
@@ -56,6 +56,36 @@ class Settings:
     # ou um nome de modelo completo — nunca uma versão hardcoded por suposição.
     agent_model: str = os.environ.get("JARVIS_AGENT_MODEL", "sonnet")
 
+    # --- Provider Router (v1.0 — ver docs/providers.md) ---
+    # Só checamos a presença da chave aqui; quem lê o valor de fato é
+    # `services/providers/openrouter_provider.py`, direto do ambiente.
+    openrouter_api_key: str | None = os.environ.get("OPENROUTER_API_KEY") or None
+    # Kill-switch de custo. Ligado por padrão nesta fase (item 7 da v1.0):
+    # o ProviderRouter nunca cai para um modelo pago silenciosamente — sem
+    # rota gratuita disponível, a resposta é NO_FREE_MODEL_AVAILABLE.
+    # `JARVIS_FREE_ONLY=0` desliga conscientemente (não é o padrão).
+    free_only: bool = os.environ.get("JARVIS_FREE_ONLY", "1") != "0"
+    # Orçamento de saída por resposta. 1024 e não 32: no smoke test da
+    # v1.0 um modelo de raciocínio consumiu os 32 tokens inteiros em
+    # raciocínio interno e devolveu texto vazio (ver docs/providers.md).
+    provider_max_tokens: int = int(os.environ.get("JARVIS_PROVIDER_MAX_TOKENS", "1024"))
+    provider_timeout_s: float = float(os.environ.get("JARVIS_PROVIDER_TIMEOUT_S", "60"))
+    # Teto de caracteres do contexto de memória entregue à IA
+    # (data minimization — ver services/context_builder.py).
+    max_memory_context_chars: int = int(os.environ.get("JARVIS_MAX_MEMORY_CONTEXT_CHARS", "4000"))
+
+    # --- E-mail (v1.0 — verificação de conta; ver docs/security.md) ---
+    # Sem SMTP configurado, `create_email_service()` devolve um serviço
+    # explicitamente NÃO configurado: o JARVIS nunca finge ter enviado um
+    # e-mail (erro EMAIL_SERVICE_NOT_CONFIGURED). A senha SMTP só existe no
+    # ambiente — nunca em arquivo versionado, nunca no banco.
+    smtp_host: str | None = os.environ.get("JARVIS_SMTP_HOST") or None
+    smtp_port: int = int(os.environ.get("JARVIS_SMTP_PORT", "587"))
+    smtp_username: str | None = os.environ.get("JARVIS_SMTP_USERNAME") or None
+    smtp_password: str | None = os.environ.get("JARVIS_SMTP_PASSWORD") or None
+    smtp_use_tls: bool = os.environ.get("JARVIS_SMTP_USE_TLS", "1") != "0"
+    email_from: str | None = os.environ.get("JARVIS_EMAIL_FROM") or None
+
     # --- Voz (v0.7 — ver services/stt_service.py, services/tts_service.py) ---
     # Kill-switch: mesmo com microfone e modelo presentes, permite desligar
     # a tentativa de construir um STT real (ex.: política corporativa).
@@ -78,6 +108,15 @@ class Settings:
 
     def has_anthropic_api_key(self) -> bool:
         return bool(self.anthropic_api_key)
+
+    def has_openrouter_api_key(self) -> bool:
+        return bool(self.openrouter_api_key)
+
+    def has_smtp_config(self) -> bool:
+        """SMTP só conta como configurado com host E remetente — sem os dois,
+        não há como enviar nada de verdade (usuário/senha podem ser
+        legitimamente vazios num relay local sem autenticação)."""
+        return bool(self.smtp_host and self.email_from)
 
 
 settings = Settings()

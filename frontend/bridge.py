@@ -25,7 +25,14 @@ import logging
 
 from PySide6.QtCore import Property, QCoreApplication, QObject, Signal, Slot
 
-from app.account_manager import AccountManager, InvalidCredentialsError, UsernameAlreadyExistsError
+from app.account_manager import (
+    AccountLockedError,
+    AccountManager,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    UsernameAlreadyExistsError,
+)
+from services.email_verification_service import mask_email
 from app.models import AppErrorCode, AppEvent, ResponseStatus, RiskLevel
 from frontend.message_model import MessageListModel
 from services.stt_service import create_stt_service
@@ -93,6 +100,11 @@ class JarvisBridge(QObject):
     sttReadyChanged = Signal()
     sttStatusChanged = Signal()
 
+    # --- Verificação de e-mail (v1.0) ---
+    verificationStateChanged = Signal()
+    verificationErrorRaised = Signal(str)
+    verificationSucceeded = Signal()
+
     # --- Voice Model Manager (v0.9 — global, não por usuário) ---
     voiceModelInstalledChanged = Signal()
     voiceModelDownloadActiveChanged = Signal()
@@ -139,6 +151,11 @@ class JarvisBridge(QObject):
         self._stt_ready = False
         self._stt_status = "unavailable"
 
+        # Verificação de e-mail (v1.0) — os segundos vêm de timestamps reais
+        # do banco, nunca de um timer que começa quando a tela abre.
+        self._verification_seconds_until_expiry = 0
+        self._verification_seconds_until_resend = 0
+
         self._voice_model_download_active = False
         self._voice_model_downloaded_bytes = 0
         self._voice_model_total_bytes = 0
@@ -182,6 +199,7 @@ class JarvisBridge(QObject):
         self._refresh_status()
         self._sync_messages()
         self._refresh_conversations()
+        self._refresh_verification_state()
 
     async def _leave_session(self) -> None:
         if self._event_task is not None:
@@ -306,7 +324,31 @@ class JarvisBridge(QObject):
             "username": user.username,
             "displayName": user.display_name,
             "plan": user.plan.value,
+            # `email` é `None` em contas legacy (v0.9) — o QML trata como
+            # string vazia. Nunca expomos hash de senha ou token aqui.
+            "email": user.email or "",
+            "maskedEmail": mask_email(user.email) if user.email else "",
+            "emailVerified": user.email_verified,
         }
+
+    def _refresh_verification_state(self) -> None:
+        """Relê o desafio ativo do banco e recalcula os dois contadores. Só
+        isto alimenta a tela — o Timer do QML apenas decrementa a exibição
+        entre atualizações."""
+        challenge = self._account.active_verification_challenge()
+        if challenge is None:
+            expiry, resend = 0, 0
+        else:
+            expiry = challenge.seconds_until_expiry()
+            resend = challenge.seconds_until_resend()
+        changed = (
+            expiry != self._verification_seconds_until_expiry
+            or resend != self._verification_seconds_until_resend
+        )
+        self._verification_seconds_until_expiry = expiry
+        self._verification_seconds_until_resend = resend
+        if changed:
+            self.verificationStateChanged.emit()
 
     @staticmethod
     def _summary_to_dict(summary) -> dict:
@@ -339,17 +381,68 @@ class JarvisBridge(QObject):
         return self._account.current_conversation_id or ""
 
     # ------------------------------------------------------------------
+    # Properties/Slots — verificação de e-mail (v1.0)
+    # ------------------------------------------------------------------
+
+    @Property(bool, constant=True)
+    def emailServiceConfigured(self) -> bool:
+        return self._account.verification.email_configured
+
+    @Property(bool, notify=currentUserChanged)
+    def emailVerified(self) -> bool:
+        user = self._account.current_user
+        return bool(user and user.email_verified)
+
+    @Property(bool, notify=currentUserChanged)
+    def emailVerificationPending(self) -> bool:
+        """Só é "pendente" quando há e-mail cadastrado e ainda não
+        verificado. Conta legacy sem e-mail não fica presa nesse estado."""
+        user = self._account.current_user
+        return bool(user and user.email and not user.email_verified)
+
+    @Property(int, notify=verificationStateChanged)
+    def verificationSecondsUntilExpiry(self) -> int:
+        return self._verification_seconds_until_expiry
+
+    @Property(int, notify=verificationStateChanged)
+    def verificationSecondsUntilResend(self) -> int:
+        return self._verification_seconds_until_resend
+
+    @Slot()
+    def requestVerificationCode(self) -> None:
+        asyncio.ensure_future(self._request_verification(force=False))
+
+    async def _request_verification(self, *, force: bool) -> None:
+        result = await self._account.request_email_verification(force=force)
+        self._refresh_verification_state()
+        if result.error is not None:
+            self.verificationErrorRaised.emit(result.error.message)
+
+    @Slot(str)
+    def verifyEmailCode(self, code: str) -> None:
+        error = self._account.verify_email_code(code)
+        self._refresh_verification_state()
+        if error is not None:
+            self.verificationErrorRaised.emit(error.message)
+            return
+        self._current_user = self._user_to_dict(self._account.current_user)
+        self.currentUserChanged.emit()
+        self.verificationSucceeded.emit()
+
+    # ------------------------------------------------------------------
     # Slots — contas/sessão
     # ------------------------------------------------------------------
 
-    @Slot(str, str, str)
-    def register(self, username: str, display_name: str, password: str) -> None:
-        asyncio.ensure_future(self._register(username, display_name, password))
+    @Slot(str, str, str, str)
+    def register(self, username: str, display_name: str, email: str, password: str) -> None:
+        asyncio.ensure_future(self._register(username, display_name, email, password))
 
-    async def _register(self, username: str, display_name: str, password: str) -> None:
+    async def _register(self, username: str, display_name: str, email: str, password: str) -> None:
         try:
-            user = await self._account.register(username=username, display_name=display_name, password=password)
-        except (UsernameAlreadyExistsError, ValueError) as exc:
+            user = await self._account.register(
+                username=username, display_name=display_name, password=password, email=email or None
+            )
+        except (UsernameAlreadyExistsError, EmailAlreadyRegisteredError, ValueError) as exc:
             self.authErrorRaised.emit(str(exc))
             return
         except Exception:
@@ -357,6 +450,11 @@ class JarvisBridge(QObject):
             self.authErrorRaised.emit("Não foi possível criar a conta. Tente novamente.")
             return
         await self._enter_session(user)
+        # Dispara o primeiro código automaticamente (force=True: ainda não há
+        # desafio anterior, então não há cooldown a respeitar). Sem SMTP
+        # configurado isto falha de forma explícita e o overlay diz isso —
+        # nunca fingimos ter enviado.
+        asyncio.ensure_future(self._request_verification(force=True))
 
     @Slot(str, str)
     def login(self, username: str, password: str) -> None:
@@ -365,7 +463,10 @@ class JarvisBridge(QObject):
     async def _login(self, username: str, password: str) -> None:
         try:
             user = await self._account.login(username=username, password=password)
-        except InvalidCredentialsError as exc:
+        except (InvalidCredentialsError, AccountLockedError) as exc:
+            # `AccountLockedError` já traz "tente novamente em Ns" — é a única
+            # mensagem de login que difere, e de propósito: sem ela o usuário
+            # legítimo não entenderia por que a senha certa está falhando.
             self.authErrorRaised.emit(str(exc))
             return
         except Exception:

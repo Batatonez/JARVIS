@@ -81,50 +81,53 @@ Item {
                 wrapMode: Text.Wrap
             }
 
+            // Linhas rótulo/valor. Antes eram `Row`s com um espaçador de
+            // largura fixa (`parent.width - 160`): com a janela estreita, ou
+            // com um valor longo como a origem do modelo, o texto estourava
+            // o cartão. Agora cada linha é um `Item` com o rótulo ancorado à
+            // esquerda, o valor à direita, e o valor limitado pelo espaço que
+            // sobra — quebrando linha em vez de vazar (bug do item 61, v1.0).
             Column {
                 width: parent.width
-                spacing: 4
+                spacing: 6
                 visible: overlay.modelInfo !== null
 
-                Row {
-                    width: parent.width
-                    Text { text: "Idioma"; color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 11 }
-                    Item { width: parent.width - 160; height: 1 }
+                component InfoRow: Item {
+                    property string label: ""
+                    property string value: ""
+                    width: parent ? parent.width : 0
+                    implicitHeight: Math.max(labelText.implicitHeight, valueText.implicitHeight)
+
                     Text {
-                        text: overlay.modelInfo ? overlay.modelInfo.language : ""
-                        color: Theme.textPrimary; font.family: Theme.fontFamily; font.pixelSize: 11
+                        id: labelText
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        width: Math.min(implicitWidth, parent.width * 0.45)
+                        text: parent.label
+                        color: Theme.textFaint
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
                     }
-                }
-                Row {
-                    width: parent.width
-                    Text { text: "Tamanho aprox."; color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 11 }
-                    Item { width: parent.width - 160; height: 1 }
                     Text {
-                        text: overlay._approxMb.toFixed(0) + " MB"
-                        color: Theme.textPrimary; font.family: Theme.fontFamily; font.pixelSize: 11
-                    }
-                }
-                Row {
-                    width: parent.width
-                    Text { text: "Licença"; color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 11 }
-                    Item { width: parent.width - 160; height: 1 }
-                    Text {
-                        text: overlay.modelInfo ? overlay.modelInfo.license : ""
-                        color: Theme.textPrimary; font.family: Theme.fontFamily; font.pixelSize: 11
-                    }
-                }
-                Row {
-                    width: parent.width
-                    Text { text: "Origem"; color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 11 }
-                    Item { width: parent.width - 160; height: 1 }
-                    Text {
-                        text: overlay.modelInfo ? overlay.modelInfo.source : ""
-                        color: Theme.textPrimary; font.family: Theme.fontFamily; font.pixelSize: 11
+                        id: valueText
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.left: labelText.right
+                        anchors.leftMargin: Theme.spacingSm
+                        text: parent.value
+                        color: Theme.textPrimary
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
                         wrapMode: Text.Wrap
-                        width: 200
                         horizontalAlignment: Text.AlignRight
                     }
                 }
+
+                InfoRow { label: "Idioma"; value: overlay.modelInfo ? overlay.modelInfo.language : "" }
+                InfoRow { label: "Tamanho aprox."; value: overlay._approxMb.toFixed(0) + " MB" }
+                InfoRow { label: "Licença"; value: overlay.modelInfo ? overlay.modelInfo.license : "" }
+                InfoRow { label: "Origem"; value: overlay.modelInfo ? overlay.modelInfo.source : "" }
             }
 
             // --- Progresso (só durante o download) ---

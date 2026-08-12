@@ -51,7 +51,7 @@ class QmlSmokeTests(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def _login(self) -> None:
-        await self._bridge._register("alice", "Alice", "senha-forte-123")
+        await self._bridge._register("alice", "Alice", "alice@example.com", "senha-forte-123")
 
     def _load(self):
         self.engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
@@ -208,7 +208,7 @@ class QmlSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.tmp_path, dev_mode=False, voice_service_factory=build_isolated_voice_service
         )
         await non_dev_bridge.initialize()
-        await non_dev_bridge._register("bob", "Bob", "outra-senha-456")
+        await non_dev_bridge._register("bob", "Bob", "bob@example.com", "outra-senha-456")
         self.addAsyncCleanup(non_dev_bridge._shutdown)
 
         self.engine.rootContext().setContextProperty("bridge", non_dev_bridge)

@@ -46,6 +46,19 @@ class AppErrorCode(Enum):
     STT_NOT_READY = "stt_not_ready"
     TTS_UNAVAILABLE = "tts_unavailable"
     VOICE_CANCELLED = "voice_cancelled"
+    # --- Provider Router (v1.0 — ver services/providers/) ---
+    # Erros de provider normalizados: o HUD nunca vê stack trace nem
+    # mensagem crua de HTTP (ver docs/providers.md).
+    PROVIDER_NOT_CONFIGURED = "provider_not_configured"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_RATE_LIMITED = "provider_rate_limited"
+    NO_FREE_MODEL_AVAILABLE = "no_free_model_available"
+    # --- Verificação de e-mail (v1.0 — ver services/email_verification_service.py) ---
+    EMAIL_SERVICE_NOT_CONFIGURED = "email_service_not_configured"
+    VERIFICATION_CODE_INVALID = "verification_code_invalid"
+    VERIFICATION_CODE_EXPIRED = "verification_code_expired"
+    VERIFICATION_RESEND_TOO_SOON = "verification_resend_too_soon"
+    VERIFICATION_TOO_MANY_ATTEMPTS = "verification_too_many_attempts"
 
 
 @dataclass(frozen=True)
@@ -145,12 +158,18 @@ class User:
     """Identidade pública de uma conta local (v0.9 — ver `app/account_manager.py`).
     Deliberadamente NUNCA carrega `password_hash` nem qualquer segredo — este
     é o tipo que cruza para o frontend; o hash fica só dentro de
-    `services/user_repository.py`."""
+    `services/user_repository.py`.
+
+    `email` é `None` em contas legacy (criadas na v0.9, antes de e-mail
+    existir) — elas continuam funcionando normalmente e podem adicionar um
+    e-mail depois (ver `UserRepository.set_email`). Contas novas sempre têm."""
 
     id: str
     username: str
     display_name: str
     plan: Plan
+    email: str | None = None
+    email_verified: bool = False
     created_at: datetime = field(default_factory=_utcnow)
 
 

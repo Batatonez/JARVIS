@@ -8,9 +8,10 @@ Item {
     id: overlay
 
     property bool open: false
-    property var user: null // {id, username, displayName, plan}
+    property var user: null // {id, username, displayName, plan, email, maskedEmail, emailVerified}
     signal closeRequested()
     signal logoutRequested()
+    signal verifyEmailRequested()
 
     visible: opacity > 0
     opacity: open ? 1 : 0
@@ -83,6 +84,79 @@ Item {
             }
 
             Rectangle { width: parent.width; height: 1; color: Theme.borderSubtle }
+
+            // --- E-mail (v1.0). Conta legacy da v0.9 não tem e-mail: a linha
+            // some inteira em vez de mostrar um campo vazio confuso. ---
+            Column {
+                width: parent.width
+                spacing: 4
+                // `!!` porque `user && user.email && ...` devolve `undefined`
+                // (não `false`) quando `user` é null — e `visible` é bool.
+                visible: !!(overlay.user && overlay.user.email && overlay.user.email.length > 0)
+
+                Item {
+                    width: parent.width
+                    implicitHeight: Math.max(emailLabel.implicitHeight, emailValue.implicitHeight)
+
+                    Text {
+                        id: emailLabel
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        text: "E-MAIL"
+                        color: Theme.textFaint
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        font.letterSpacing: Theme.letterSpacingLabel
+                    }
+                    Text {
+                        id: emailValue
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.left: emailLabel.right
+                        anchors.leftMargin: Theme.spacingSm
+                        text: overlay.user ? overlay.user.maskedEmail : ""
+                        color: Theme.textPrimary
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideMiddle
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: Theme.spacingSm
+
+                    Rectangle {
+                        width: 7; height: 7; radius: 3.5
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: (overlay.user && overlay.user.emailVerified) ? Theme.success : Theme.warning
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: (overlay.user && overlay.user.emailVerified) ? "Verificado" : "Não verificado"
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                    }
+                }
+
+                ActionButton {
+                    visible: !!(overlay.user && !overlay.user.emailVerified)
+                    label: "VERIFICAR E-MAIL"
+                    emphasis: false
+                    onClicked: overlay.verifyEmailRequested()
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: Theme.borderSubtle
+                // `!!` porque `user && user.email && ...` devolve `undefined`
+                // (não `false`) quando `user` é null — e `visible` é bool.
+                visible: !!(overlay.user && overlay.user.email && overlay.user.email.length > 0)
+            }
 
             Row {
                 width: parent.width

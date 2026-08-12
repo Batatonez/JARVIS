@@ -25,21 +25,32 @@ from pathlib import Path
 from app.application import JarvisApplication
 from app.core import JarvisCore
 from app.entitlements import Entitlements, entitlements_for
-from app.models import AppEvent, ConversationSummary, User
+from app.models import AppError, AppErrorCode, AppEvent, ConversationSummary, User
 from config.settings import Settings
 from services import memory_migration, session_store
 from services.ai_service import AIService
 from services.conversation_repository import ConversationRepository, derive_title
+from services.email_service import EmailService, create_email_service
+from services.email_verification_repository import EmailVerificationRepository, VerificationChallenge
+from services.email_verification_service import EmailVerificationService, VerificationRequestResult
 from services.local_database import connect
 from services.memory_service import MemoryService
 from services.session_repository import SessionRepository
-from services.user_repository import InvalidCredentialsError, UserRepository, UsernameAlreadyExistsError
+from services.user_repository import (
+    AccountLockedError,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    UserRepository,
+    UsernameAlreadyExistsError,
+)
 from services.voice_service import VoiceService
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AccountLockedError",
     "AccountManager",
+    "EmailAlreadyRegisteredError",
     "InvalidCredentialsError",
     "UsernameAlreadyExistsError",
 ]
@@ -57,11 +68,12 @@ class AccountManager:
         connection: sqlite3.Connection | None = None,
         ai_service_factory: Callable[[], AIService] | None = None,
         voice_service_factory: Callable[[JarvisCore], VoiceService] | None = None,
+        email_service: EmailService | None = None,
     ) -> None:
-        """`ai_service_factory`/`voice_service_factory` só existem para os
-        testes injetarem fakes (mesmo raciocínio de `JarvisCore`/
-        `JarvisApplication` aceitarem serviços por parâmetro) — em produção
-        nunca são passados, e o comportamento é idêntico ao anterior."""
+        """`ai_service_factory`/`voice_service_factory`/`email_service` só
+        existem para os testes injetarem fakes (mesmo raciocínio de
+        `JarvisCore`/`JarvisApplication` aceitarem serviços por parâmetro) —
+        em produção nunca são passados, e o comportamento é idêntico."""
         self.settings = settings
         self._conn = connection or connect(settings.db_path)
         self._users = UserRepository(self._conn)
@@ -69,6 +81,11 @@ class AccountManager:
         self._conversations = ConversationRepository(self._conn)
         self._ai_service_factory = ai_service_factory
         self._voice_service_factory = voice_service_factory
+        self.verification = EmailVerificationService(
+            EmailVerificationRepository(self._conn),
+            email_service or create_email_service(settings),
+            app_name=settings.app_name,
+        )
 
         self._current_user: User | None = None
         self._current_session_token: str | None = None
@@ -122,9 +139,17 @@ class AccountManager:
         await self._open_session(user, token)
         return user
 
-    async def register(self, *, username: str, display_name: str, password: str) -> User:
+    async def register(
+        self, *, username: str, display_name: str, password: str, email: str | None = None
+    ) -> User:
+        """`email` é obrigatório para contas novas na prática (o HUD sempre
+        envia), mas o parâmetro é opcional para não quebrar chamadas antigas
+        e para permitir contas sem e-mail em testes/CLI. Uma conta recém
+        criada nunca nasce verificada — ver `request_email_verification()`."""
         is_first_account = not self._users.has_any_user()
-        user = self._users.create_user(username=username, display_name=display_name, password=password)
+        user = self._users.create_user(
+            username=username, display_name=display_name, password=password, email=email
+        )
 
         if is_first_account:
             migrated = memory_migration.migrate_legacy_memory(
@@ -141,15 +166,83 @@ class AccountManager:
         return user
 
     async def login(self, *, username: str, password: str) -> User:
-        user = self._users.authenticate(username=username, password=password)  # levanta InvalidCredentialsError
+        # Levanta InvalidCredentialsError (usuário/senha) ou AccountLockedError
+        # (cooldown de força bruta) — ver services/user_repository.py.
+        user = self._users.authenticate(username=username, password=password)
         token = self._sessions.create_session(user.id)
         session_store.save_token(self.settings.session_token_path, token)
         await self._open_session(user, token)
         return user
 
+    # ------------------------------------------------------------------
+    # Verificação de e-mail (v1.0)
+    #
+    # Uma conta NÃO verificada continua funcionando normalmente nesta versão
+    # (chat, memória, chats persistidos) — a verificação existe para a conta
+    # ser recuperável/confiável no futuro, não como paywall. Bloquear o uso
+    # do app numa conta local, sem backend, só puniria quem não configurou
+    # SMTP. Ver docs/security.md.
+    # ------------------------------------------------------------------
+
+    async def request_email_verification(self, *, force: bool = False) -> VerificationRequestResult:
+        """Envia (ou reenvia) o código para o e-mail da conta atual.
+        `force=True` pula o cooldown de reenvio — usado logo após o cadastro,
+        quando ainda não existe desafio anterior."""
+        user = self._current_user
+        if user is None:
+            return VerificationRequestResult(
+                sent=False,
+                error=AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada."),
+            )
+        if not user.email:
+            return VerificationRequestResult(
+                sent=False,
+                error=AppError(
+                    AppErrorCode.INTERNAL_ERROR,
+                    "Esta conta não tem e-mail cadastrado. Adicione um e-mail antes de verificar.",
+                ),
+            )
+        return await self.verification.request_code(user_id=user.id, email=user.email, force=force)
+
+    def verify_email_code(self, code: str) -> AppError | None:
+        """`None` = verificado. O `User` em memória é atualizado para que o
+        HUD reflita o novo estado sem precisar relogar."""
+        user = self._current_user
+        if user is None:
+            return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        error = self.verification.verify(user_id=user.id, code=code)
+        if error is not None:
+            return error
+        self._users.mark_email_verified(user.id)
+        self._current_user = self._users.get_user(user.id) or user
+        logger.info("E-mail verificado para a conta '%s'.", user.username)
+        return None
+
+    def active_verification_challenge(self) -> VerificationChallenge | None:
+        """Desafio ativo da conta atual — os dois contadores do HUD
+        (expiração e reenvio) derivam daqui, então fechar e reabrir o JARVIS
+        mostra o tempo real restante, não um timer reiniciado."""
+        if self._current_user is None:
+            return None
+        return self.verification.active_challenge(self._current_user.id)
+
+    def set_email(self, email: str) -> User | None:
+        """Define/troca o e-mail da conta atual (contas legacy da v0.9 nascem
+        sem e-mail). Sempre volta ao estado não-verificado."""
+        if self._current_user is None:
+            return None
+        user = self._users.set_email(self._current_user.id, email)
+        if user is not None:
+            self._current_user = user
+        return user
+
     async def logout(self) -> None:
-        """Invalida a sessão e encerra a Application Layer do usuário atual.
-        NÃO apaga a conta, os chats ou a memória — só sai."""
+        """Sai da conta atual. Em ordem: encerra a Application Layer (o que
+        cancela a requisição de IA pendente e desliga o microfone/TTS via
+        `JarvisApplication.stop()`), invalida a sessão no banco, apaga o
+        token local, e limpa o estado sensível em RAM.
+
+        NÃO apaga a conta, os chats nem a memória — só sai."""
         await self._teardown_session()
         if self._current_session_token is not None:
             self._sessions.delete_session(self._current_session_token)

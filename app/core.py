@@ -24,6 +24,7 @@ from app.state import JarvisState
 from config.settings import Settings
 from config.settings import settings as default_settings
 from services.ai_service import AIService, AIServiceUnavailableError, UnavailableAIService, create_ai_service
+from services.context_builder import prepare_memory_context
 from services.event_bus import EventBus
 from services.memory_service import MemoryService, MemoryUnavailableError
 
@@ -90,7 +91,13 @@ class JarvisCore:
         """Monta o contexto de memória controlado que vai para a IA: só
         perfil e preferências, lidos via MemoryService (nunca acesso direto
         a arquivos por parte da camada de IA). Público porque também é usado
-        por `restart_ai_session()` ao montar uma sessão nova."""
+        por `restart_ai_session()` ao montar uma sessão nova.
+
+        v1.0: o resultado passa por `prepare_memory_context()` — sanitizado
+        (segredo que tenha vazado para dentro da memória vira `[REDACTED]`)
+        e truncado a `settings.max_memory_context_chars`. Como isso acontece
+        AQUI, todo provider recebe a memória já tratada; nenhum deles
+        precisa lembrar de fazer isso (ver services/context_builder.py)."""
         parts: list[str] = []
         try:
             parts.append("Perfil do usuário:\n" + self.memory_service.get_profile())
@@ -100,7 +107,9 @@ class JarvisCore:
             parts.append("Preferências do usuário:\n" + self.memory_service.get_preferences())
         except MemoryUnavailableError:
             pass
-        return "\n\n".join(parts)
+        return prepare_memory_context(
+            "\n\n".join(parts), max_chars=self.settings.max_memory_context_chars
+        )
 
     async def _connect_ai_service(self) -> None:
         memory_context = self.build_memory_context()

@@ -14,7 +14,7 @@ from pathlib import Path
 from app.account_manager import AccountManager
 from services import session_store
 from services.ai_service import UnavailableAIService
-from services.session_repository import SessionRepository
+from services.session_repository import SessionRepository, hash_token
 from services.user_repository import InvalidCredentialsError, UsernameAlreadyExistsError
 from tests.helpers import build_isolated_account_manager, build_isolated_settings, build_isolated_voice_service
 
@@ -207,8 +207,9 @@ class AccountManagerAuthTests(unittest.IsolatedAsyncioTestCase):
             resolved = account._sessions.validate_session(expired_token)
             self.assertIsNone(resolved)
 
+            # v1.0: `sessions` guarda o SHA-256 do token, nunca o token em si.
             row = account._conn.execute(
-                "SELECT 1 FROM sessions WHERE token = ?", (expired_token,)
+                "SELECT 1 FROM sessions WHERE token_hash = ?", (hash_token(expired_token),)
             ).fetchone()
             self.assertIsNone(row)  # validate_session já removeu a sessão vencida
         finally:

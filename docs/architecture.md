@@ -4,7 +4,7 @@
 
 ## Estado atual em uma frase
 
-**JARVIS v0.9 — Accounts, Persistent Chats & Voice Input Fix**: o HUD ganhou uma camada de contas locais (`AccountManager`, `app/account_manager.py`) **na frente** de `JarvisApplication` — login/registro, sessão persistida, chats salvos em SQLite e memória isolada por conta — sem alterar `JarvisCore`/`Orchestrator`/`ClaudeAgentProvider`, que continuam exatamente como no v0.7/v0.8. O terminal (`app/terminal.py`) **não** ganhou contas: continua falando direto com `JarvisApplication`, memória global em `memory/`. A segunda entrega desta versão é a correção real do microfone (diagnóstico, causa, e fix — ver seção "Voice Foundation" abaixo). Sem nenhuma API key configurada neste ambiente de desenvolvimento. Detalhes de UI ficam em [`frontend/README.md`](../frontend/README.md), que é a fonte de verdade sobre o HUD — este documento cobre arquitetura, não acabamento visual.
+**JARVIS v1.0 — AI integrada e hardening**: a cadeia de IA passou a ser real — `JarvisApplication → Orchestrator → AIService → ProviderRouter → OpenRouter → modelo` — com o JARVIS (não o Ruflo) decidindo provider/modelo/custo e `free_only` ligado por padrão. Sobre isso, a v1.0 endurece o que a v0.9 criou: token de sessão só como hash no banco (migrado sem invalidar sessões), backoff contra força bruta, verificação real de e-mail, migração de schema versionada e transacional, e sanitização do contexto que sai da máquina. O terminal continua sem contas. Detalhes de UI ficam em [`frontend/README.md`](../frontend/README.md); segurança em [`docs/security.md`](security.md); Provider Router em [`docs/providers.md`](providers.md).
 
 ## Visão geral (arquitetura-alvo, planejada)
 
@@ -143,11 +143,13 @@ AccountManager
     └── JarvisCore + JarvisApplication   (só existem enquanto alguém está logado)
 ```
 
-**Banco de dados**: SQLite via `sqlite3` da biblioteca padrão (`services/local_database.py`), sem ORM — schema com `CREATE TABLE IF NOT EXISTS` para `users`, `sessions`, `conversations`, `messages`, `PRAGMA foreign_keys = ON`, e toda query parametrizada (`?`), nunca string interpolada. Vive em `settings.db_path` (`data/jarvis.db`), fora do Git.
+**Banco de dados**: SQLite via `sqlite3` da biblioteca padrão (`services/local_database.py`), sem ORM — tabelas `users`, `sessions`, `conversations`, `messages` e (v1.0) `email_verification_tokens`, com `PRAGMA foreign_keys = ON` e toda query parametrizada (`?`), nunca string interpolada. Vive em `settings.db_path` (`data/jarvis.db`), fora do Git.
+
+**Migrações versionadas (v1.0)**: o schema é versionado por `PRAGMA user_version` e evolui por uma lista ordenada de migrações, **uma transação por migração**. Se uma falhar, o `ROLLBACK` devolve o banco ao estado anterior e o erro sobe como `MigrationError` — nunca fica meio-migrado, e **nunca** apagamos/recriamos o banco para resolver divergência de schema. A migração v1 → v2 (v0.9 → v1.0) adiciona e-mail/verificação/contadores de força bruta e converte `sessions.token` (texto puro) em `sessions.token_hash` calculando o SHA-256 dos tokens existentes em Python — de modo que **nenhuma sessão ativa foi invalidada** (validado contra o banco real: o auto-login continuou funcionando após a migração).
 
 **Senha**: nunca armazenada em texto puro. `services/password_hashing.py` usa `hashlib.scrypt` (biblioteca padrão, um dos KDFs recomendados pelo OWASP Password Storage Cheat Sheet junto com Argon2id) — salt aleatório de 16 bytes via `secrets`, custo `N=2^15, r=8, p=1`, comparação em tempo constante via `hmac.compare_digest`, formato auto-descritivo (`scrypt$n$r$p$salt$hash`). Escolhido em vez de `bcrypt`/`argon2-cffi` para não somar dependência externa nova — `scrypt` já é stdlib.
 
-**Sessão persistida sem guardar a senha**: `SessionRepository.create_session()` gera um token opaco (`secrets.token_urlsafe(32)`) com expiração (30 dias), guardado no banco. O mesmo token é espelhado localmente (`services/session_store.py`, `data/session.local`) para sobreviver a um fechar/reabrir do JARVIS — cifrado via Windows DPAPI (`win32crypt.CryptProtectData`/`CryptUnprotectData`, já uma dependência transitiva de `pyttsx3`) quando disponível, com fallback degradado (texto puro, mas ainda fora do Git) se `win32crypt` não existir no ambiente. `AccountManager.try_auto_login()` valida esse token uma vez, na inicialização; token ausente/inválido/expirado só mostra a tela de login normalmente, sem erro.
+**Sessão persistida sem guardar a senha**: `SessionRepository.create_session()` gera um token opaco (`secrets.token_urlsafe(32)`) com expiração (30 dias). **v1.0: o banco guarda só o SHA-256 do token**, nunca o token em si — quem obtiver uma cópia do `jarvis.db` não consegue se passar por um usuário logado (ver [`docs/security.md`](security.md)). O mesmo token é espelhado localmente (`services/session_store.py`, `data/session.local`) para sobreviver a um fechar/reabrir do JARVIS — cifrado via Windows DPAPI (`win32crypt.CryptProtectData`/`CryptUnprotectData`, já uma dependência transitiva de `pyttsx3`) quando disponível, com fallback degradado (texto puro, mas ainda fora do Git) se `win32crypt` não existir no ambiente. `AccountManager.try_auto_login()` valida esse token uma vez, na inicialização; token ausente/inválido/expirado só mostra a tela de login normalmente, sem erro.
 
 **Logout vs. shutdown** — dois encerramentos deliberadamente diferentes: `logout()` invalida a sessão no banco e apaga o token local (próxima abertura pede login de novo); `shutdown()` (fechar a janela) só derruba a Application Layer em RAM, preservando o token — a próxima execução continua logada. Nenhum dos dois apaga conta, chats ou memória.
 
@@ -158,6 +160,8 @@ AccountManager
 **Histórico visual vs. sessão real do Claude — distinção importante**: `JarvisApplication.load_conversation_history()` (chamado ao abrir uma conversa salva) só repovoa o `Conversation` em RAM para exibição — **não** reconecta uma sessão real do `ClaudeSDKClient` com aquele contexto (não existe Claude real ainda para reconectar). Isso está documentado explicitamente no docstring do método para nunca ser confundido no futuro com "restaurar memória de conversa" de verdade.
 
 **Memória por conta**: cada usuário tem `data/users/<user-id>/memory/{profile.md,preferences.md}` (`services/memory_migration.py::user_memory_dir()`) — nunca o username diretamente no caminho (evita path traversal via nome de usuário malicioso; o ID interno, um UUID, é que vira nome de pasta). A memória legacy pré-contas (`memory/profile.md`/`memory/preferences.md`, v0.1-v0.8) é migrada — **copiada, nunca movida/apagada** — para a primeira conta criada no ambiente (`UserRepository.has_any_user()` decide isso antes de criar a conta), e só se o destino ainda não tiver arquivo próprio (idempotente, nunca sobrescreve).
+
+**Verificação de e-mail (v1.0)**: `services/email_verification_service.py` + `_repository.py` + `services/email_service.py` (SMTP genérico, nunca amarrado a um provedor específico). Código de 6 dígitos, hash `scrypt` no banco (reusando `password_hashing.py` — nenhuma criptografia nova), expira em 5 min, reenvio após 60s, uso único, novo invalida o anterior, máximo de 5 tentativas. **Todas as regras de tempo são validadas no backend** contra timestamps persistidos — o QML só decrementa a exibição, então fechar e reabrir o app mostra o tempo real restante. Sem SMTP configurado, o serviço reporta `EMAIL_SERVICE_NOT_CONFIGURED` em vez de fingir envio. Uma conta não verificada **continua funcionando** (a verificação existe para tornar a conta recuperável no futuro, não como paywall — bloquear o app numa conta local sem backend só puniria quem não configurou SMTP).
 
 **FREE/PRO sem billing**: `app/entitlements.py` — `Plan` (`app/models.py`) mais `Entitlements`/`entitlements_for(plan)`, um único ponto de resolução em vez de `if user.plan == Plan.PRO` espalhado pelo projeto. Hoje PRO só difere em `max_conversation_messages` (400 vs. 200) — tudo o resto (`advanced_tools`, `multi_agent`) é `False` para os dois planos, documentado como PLANEJADO. Sem Stripe, Pix, cartão, checkout ou assinatura.
 
@@ -225,22 +229,33 @@ voz → STT → texto → intenção → tool → PermissionService → confirma
 
 Isto é: uma frase transcrita passa pelo **mesmo** `PermissionService` (`app/permissions.py`) que qualquer outra origem de comando — não existe (nem vai existir) um caminho que deixe voz executar uma ação sem a confirmação que um comando de texto exigiria.
 
-## Camada de IA: AIService → ClaudeAgentProvider
+## Camada de IA: AIService → ProviderRouter | ClaudeAgentProvider
+
+**Status: implementado e ativo (v1.0).**
 
 ```
 Orchestrator
     ↓
 AIService                 (abstração — services/ai_service.py)
     ↓
-    ├── UnavailableAIService     (fallback — sem API key)
-    └── ClaudeAgentProvider      (services/claude_agent_provider.py — com API key)
-            ↓
-        ClaudeSDKClient          (claude_agent_sdk)
-            ↓
-        Claude Agent SDK
+    ├── ProviderRouterAIService  (v1.0 — services/provider_ai_service.py, com OPENROUTER_API_KEY)
+    │       ↓
+    │   ProviderRouter           (services/providers/router.py — decide provider/modelo/custo)
+    │       ↓
+    │   OpenRouterProvider       (services/providers/openrouter_provider.py)
+    │
+    ├── ClaudeAgentProvider      (services/claude_agent_provider.py — com ANTHROPIC_API_KEY)
+    │       ↓
+    │   ClaudeSDKClient          (claude_agent_sdk)
+    │
+    └── UnavailableAIService     (fallback — sem nenhuma chave; o app abre e o chat não quebra)
 ```
 
-`create_ai_service(settings)` decide entre as duas implementações checando apenas a *presença* de `ANTHROPIC_API_KEY` no ambiente — quem efetivamente lê o valor da chave é o próprio Agent SDK ao conectar, não o JARVIS. O Orchestrator só conhece `AIService`: não importa `claude_agent_sdk`, não sabe o que é um `ClaudeSDKClient`, não trata autenticação.
+`create_ai_service(settings)` decide checando apenas a *presença* das chaves no ambiente, nesta precedência: **OpenRouter → Anthropic → indisponível**. OpenRouter vem primeiro porque é o caminho que passa pelo `ProviderRouter`, a camada que dá controle real de custo (`free_only`). O Orchestrator continua conhecendo só `AIService` — não sabe o que é um `ProviderRouter`, um `ClaudeSDKClient` ou uma chave de API.
+
+**Por que um adaptador e não um provider novo no Orchestrator**: a interface `AIService` (`start`/`ask`/`close`) já era exatamente o contrato de "uma sessão de conversa". O `ProviderRouter` fala em requisições isoladas. `ProviderRouterAIService` guarda o histórico em RAM e o reenvia a cada chamada, transformando a API stateless da OpenRouter na sessão contínua que o resto do sistema espera (ver [`docs/providers.md`](providers.md)). Nenhuma camada acima mudou.
+
+**Ruflo não participa desta cadeia.** Nenhuma chamada de IA do JARVIS passa por `agent_execute` — ver [`docs/ruflo-integration.md`](ruflo-integration.md) para o bug de model routing que motiva essa separação.
 
 **Lifecycle explícito** (`start` → `ask` → `ask` → ... → `close`), pensado para sessão contínua:
 
@@ -260,9 +275,11 @@ AIService.close()
 
 `ClaudeAgentProvider.start()` é idempotente (chamar de novo não recria a sessão) e `close()` também (chamar em um provider já encerrado não faz nada). Se `start()` falhar (ex.: CLI do Agent SDK ausente, autenticação inválida), `JarvisCore` troca `self.ai_service` por um `UnavailableAIService` em runtime e segue normalmente — a falha nunca derruba o Core.
 
-### Status: PREPARADO, MAS NÃO ATIVADO
+### Status do Claude Agent SDK: preservado, não ativado neste ambiente
 
-A arquitetura acima está implementada e testada (com fakes/mocks — ver `tests/test_claude_agent_provider.py`), mas **nenhuma chamada real foi feita** neste ambiente: não há `ANTHROPIC_API_KEY` configurada. Configurar a variável (ver [`.env.example`](../.env.example)) é suficiente para ativar o `ClaudeAgentProvider` sem qualquer mudança de código.
+A integração com o Agent SDK continua implementada e testada com fakes (`tests/test_claude_agent_provider.py`), mas **nenhuma chamada real** foi feita a ela: não há `ANTHROPIC_API_KEY` neste ambiente. Configurar a variável é suficiente para ativá-la, sem mudança de código — lembrando que, se `OPENROUTER_API_KEY` também existir, o OpenRouter tem precedência.
+
+O caminho **OpenRouter**, ao contrário, foi validado de ponta a ponta com uma chamada real (ver [`docs/providers.md`](providers.md), seção "Smoke test manual real").
 
 ### Conversa contínua
 
@@ -383,7 +400,12 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 
 ## O que já existe vs. o que é planejamento
 
-**IMPLEMENTADO NO v0.5–v0.9:**
+**IMPLEMENTADO NO v0.5–v1.0:**
+- **IA real conectada (v1.0)**: `AIService → ProviderRouter → OpenRouter`, `free_only` por padrão, histórico reenviado (API stateless), erros de provider normalizados, metadados técnicos fora do texto da mensagem — ver "Camada de IA" acima
+- **Verificação de e-mail (v1.0)**: código de 6 dígitos, 5 min, reenvio 60s, uso único, rate limit — validado no backend
+- **Hardening de auth (v1.0)**: token de sessão como hash, backoff de força bruta, anti-enumeração (mensagem e timing)
+- **Migração de schema versionada e transacional (v1.0)** — dados v0.9 preservados, sessões não invalidadas
+- **Sanitização de contexto (v1.0)**: data minimization + redação de segredos antes de qualquer coisa sair da máquina
 - Contas locais (v0.9): registro/login/logout, sessão persistida entre execuções (token opaco + Windows DPAPI), isolamento por `user_id` reforçado na query, hash de senha via `scrypt` — ver seção "Contas locais" acima
 - Sidebar retrátil e chats persistidos em SQLite (v0.9): criar/listar/ordenar/buscar/renomear/excluir conversa, carregar conversa antiga (histórico visual, não sessão real do Claude), título derivado da primeira mensagem
 - Memória por conta com migração controlada da memória legacy (v0.9) — original nunca apagado/movido
@@ -405,22 +427,20 @@ O Claude Agent SDK é assíncrono (`ClaudeSDKClient` usa `async`/`await`). Para 
 - Fundação de permissões em memória (`app/permissions.py`), com UI de overlay pronta no HUD — não conectada a ferramentas reais; voz não a contorna
 - Terminal consumindo `JarvisApplication` diretamente (sem contas — ver "Estado atual em uma frase")
 - Tudo o que já era v0.3/v0.4 (Claude Agent SDK, lifecycle, fallback, memória somente-leitura, estados, event bus interno)
-- 214 testes automatizados, todos offline (mocks/fakes, SQLite temporário, sem chamada real, sem microfone/TTS/download real, incluindo smoke test de QML offscreen — auth e HUD — e estados visuais simulados)
+- 300 testes automatizados, todos offline (mocks/fakes, SQLite temporário, sem chamada real de IA/e-mail/rede, sem microfone/TTS/download real, incluindo smoke test de QML offscreen — auth e HUD — e estados visuais simulados)
 - Core/Application/HUD funcionais sem qualquer API key configurada e sem qualquer dependência de voz instalada
 
 **PREPARADO, MAS NÃO ATIVADO:**
-- Conexão real com Claude (arquitetura pronta; falta `ANTHROPIC_API_KEY` no ambiente)
-- Sessão real de conversa contínua (testada com fakes; não validada com IA real nesta etapa)
-- Fluxo completo voz → Claude → voz (a metade de voz já é real; a "inteligência" no meio depende de uma versão futura ativar o Claude)
-- Streaming real token-a-token (contrato de eventos já existe; falta só a extensão em `ClaudeAgentProvider.ask()` e ligar `response.delta` no HUD)
-- Configuração futura de API key (`.env.example` documenta as variáveis; nenhum valor real existe no repositório)
+- Conexão real com Claude via Agent SDK (arquitetura pronta e testada com fakes; falta `ANTHROPIC_API_KEY` no ambiente — o caminho OpenRouter, esse sim, foi validado com chamada real)
+- Streaming real token-a-token (contrato de eventos existe e o HUD sabe reagir; ver `docs/providers.md` para por que a v1.0 entrega resposta completa e não fez streaming falso)
+- Groq/Gemini/Mistral/NVIDIA: registry `NOT_IMPLEMENTED`, sem classe real
 - Sincronização de contas/chats na nuvem (arquitetura local-first, mas não impede isso no futuro)
 - Cobrança real do plano PRO (`app/entitlements.py` já resolve capacidades por plano; sem Stripe/Pix/checkout)
 
 **PLANEJADO:**
-- API Claude real
-- Verificação de e-mail / recuperação de conta
-- Backend/cloud e billing real
+- Streaming token-a-token de verdade
+- Providers adicionais reais pelo mesmo router (incluindo Anthropic)
+- Backend/cloud, auth remota, recuperação de senha e billing real
 - Wake word / escuta permanente (por enquanto é só push-to-talk, deliberadamente)
 - Permissões interativas de verdade (overlay do HUD já existe; falta conectar a ferramentas reais)
 - Ferramentas de computador (READ/ACTION/DANGEROUS conectado à execução) — voz não terá atalho para isso, ver "Voz e permissões"

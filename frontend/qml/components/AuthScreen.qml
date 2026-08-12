@@ -13,7 +13,7 @@ Item {
     property bool busy: false
     property string errorMessage: ""
     signal loginRequested(string username, string password)
-    signal registerRequested(string username, string displayName, string password)
+    signal registerRequested(string username, string displayName, string email, string password)
 
     property string _mode: "choice" // choice | login | register
 
@@ -24,6 +24,7 @@ Item {
         loginPassword.text = ""
         registerUsername.text = ""
         registerDisplayName.text = ""
+        registerEmail.text = ""
         registerPassword.text = ""
         root.errorMessage = ""
     }
@@ -148,6 +149,7 @@ Item {
 
                 AuthField { id: registerUsername; Layout.fillWidth: true; label: "USERNAME" }
                 AuthField { id: registerDisplayName; Layout.fillWidth: true; label: "NOME" }
+                AuthField { id: registerEmail; Layout.fillWidth: true; label: "E-MAIL" }
                 AuthField { id: registerPassword; Layout.fillWidth: true; label: "SENHA"; isPassword: true
                     onAccepted: registerSubmit.clicked()
                 }
@@ -165,12 +167,19 @@ Item {
                     Layout.fillWidth: true
                     label: root.busy ? "CRIANDO..." : "CRIAR CONTA"
                     emphasis: true
-                    enabled: !root.busy && registerUsername.text.length > 0 && registerPassword.text.length > 0
+                    // Validação de e-mail deliberadamente mínima (tem "@" com
+                    // algo dos dois lados): validar e-mail por regex no cliente
+                    // rejeita endereços legítimos e não prova nada — quem prova
+                    // que o endereço existe é a verificação por código.
+                    enabled: !root.busy
+                        && registerUsername.text.length > 0
+                        && registerPassword.text.length > 0
+                        && /^[^@\s]+@[^@\s]+$/.test(registerEmail.text.trim())
                     onClicked: {
                         root.busy = true
                         root.errorMessage = ""
                         const name = registerDisplayName.text.length > 0 ? registerDisplayName.text : registerUsername.text
-                        root.registerRequested(registerUsername.text, name, registerPassword.text)
+                        root.registerRequested(registerUsername.text, name, registerEmail.text.trim(), registerPassword.text)
                     }
                 }
                 ActionButton {

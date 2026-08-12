@@ -54,6 +54,12 @@ class ProviderRouter:
 
         return result
 
+    def configured_provider_ids(self) -> list[ProviderId]:
+        """Providers com credencial presente, na ordem de preferência do
+        registry. Síncrono e sem rede — usado por `AIService.is_available()`,
+        que é chamado com frequência (status do HUD)."""
+        return [provider.id for provider in self._registry.configured_providers()]
+
     async def health(self) -> dict[ProviderId, ProviderStatus]:
         result: dict[ProviderId, ProviderStatus] = {}
         for descriptor in self._registry.descriptors():

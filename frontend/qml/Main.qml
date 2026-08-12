@@ -32,6 +32,7 @@ Window {
     property bool sidebarExpanded: true
     property bool accountPanelOpen: false
     property bool voiceSetupOpen: false
+    property bool emailVerificationOpen: false
     property string sidebarSearchQuery: ""
     readonly property var sidebarConversations: sidebarSearchQuery.length > 0
         ? bridge.searchConversations(sidebarSearchQuery)
@@ -157,7 +158,7 @@ Window {
             Layout.fillHeight: true
             visible: !bridge.authenticated
             onLoginRequested: (username, password) => bridge.login(username, password)
-            onRegisterRequested: (username, displayName, password) => bridge.register(username, displayName, password)
+            onRegisterRequested: (username, displayName, email, password) => bridge.register(username, displayName, email, password)
         }
 
         RowLayout {
@@ -424,6 +425,24 @@ Window {
         function onVoiceModelInstalledChanged() {
             if (bridge.voiceModelInstalled) window.voiceSetupOpen = false
         }
+        function onVerificationErrorRaised(message) {
+            // Se o overlay está aberto, o erro aparece nele (contexto certo);
+            // senão cai no aviso discreto do rodapé.
+            if (window.emailVerificationOpen) {
+                emailVerification.errorMessage = message
+            } else {
+                busyHint.text = message
+                busyHint.opacity = 1
+                busyHintTimer.restart()
+            }
+        }
+        function onVerificationSucceeded() {
+            emailVerification.errorMessage = ""
+            window.emailVerificationOpen = false
+            busyHint.text = "E-mail verificado."
+            busyHint.opacity = 1
+            busyHintTimer.restart()
+        }
     }
 
     // ------------------------------------------------------------------
@@ -505,6 +524,14 @@ Window {
             window.accountPanelOpen = false
             bridge.logout()
         }
+        onVerifyEmailRequested: {
+            window.accountPanelOpen = false
+            window.emailVerificationOpen = true
+            // Só pede um código novo se não houver um ativo — respeitar o
+            // cooldown é responsabilidade do backend, mas evitar a chamada
+            // inútil aqui poupa um erro visível ao usuário.
+            if (bridge.verificationSecondsUntilExpiry <= 0) bridge.requestVerificationCode()
+        }
     }
 
     VoiceSetupOverlay {
@@ -518,6 +545,21 @@ Window {
         onDownloadRequested: bridge.downloadVoiceModel()
         onCancelRequested: bridge.cancelVoiceModelDownload()
         onCloseRequested: window.voiceSetupOpen = false
+    }
+
+    EmailVerificationOverlay {
+        id: emailVerification
+        objectName: "emailVerificationOverlay"
+        anchors.fill: parent
+        z: 100
+        open: window.emailVerificationOpen
+        maskedEmail: bridge.currentUser ? bridge.currentUser.maskedEmail : ""
+        emailConfigured: bridge.emailServiceConfigured
+        secondsUntilExpiry: bridge.verificationSecondsUntilExpiry
+        secondsUntilResend: bridge.verificationSecondsUntilResend
+        onSubmitCode: (code) => bridge.verifyEmailCode(code)
+        onResendRequested: bridge.requestVerificationCode()
+        onCloseRequested: window.emailVerificationOpen = false
     }
 
     // ------------------------------------------------------------------

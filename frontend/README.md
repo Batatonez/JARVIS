@@ -16,6 +16,14 @@ agora com uma sidebar de chats. O design system (`Theme.qml`), o núcleo de
 IA e o resto do HUD v0.8 continuam exatamente iguais. Ver "Contas (v0.9)" e
 "Voz (v0.9)" abaixo para o detalhe.
 
+**v1.0 acrescenta ao HUD**: campo de e-mail no cadastro, overlay de
+verificação de e-mail (`EmailVerificationOverlay.qml`) com contadores
+derivados de timestamps reais do backend, estado de e-mail no painel de
+conta, e o indicador de IA agora mostrando o provider real (`OPENROUTER
+(FREE)` quando `free_only` está ligado — o mesmo `bridge.aiBackend` de
+sempre, agora com conteúdo de verdade). Também corrige o overflow de texto
+do `VoiceSetupOverlay` (ver "Correções visuais da v1.0").
+
 ## Como executar
 
 ```powershell
@@ -144,8 +152,9 @@ frontend/qml/
     ├── Sidebar.qml            barra lateral retrátil: chats, busca, conta — v0.9
     ├── SidebarIconButton.qml  botão de ícone (toggle de recolher/expandir) — v0.9
     ├── SidebarConversationRow.qml  uma linha de conversa na sidebar — v0.9
-    ├── AccountPanel.qml       modal de conta (nome, plano, sair) — v0.9
+    ├── AccountPanel.qml       modal de conta (nome, e-mail/verificação, plano, sair) — v0.9/v1.0
     ├── VoiceSetupOverlay.qml  modal de instalação do modelo de voz — v0.9
+    ├── EmailVerificationOverlay.qml  verificação de e-mail com contadores reais — v1.0
     ├── ChatPanel.qml          lista de conversa, scroll inteligente, indicador de resposta pendente
     ├── MessageItem.qml        uma mensagem (bloco discreto, não bubble)
     ├── InputBar.qml           entrada multiline + microfone: [texto][MIC][SEND]
@@ -334,6 +343,33 @@ usado em outros pontos do próprio arquivo), que trata `null` e `undefined`
 da mesma forma. Coberto por `tests/test_qml_smoke.py`
 (`test_permission_overlay_hidden_when_no_pending_request` e
 `test_permission_overlay_visible_with_pending_request`).
+
+## Verificação de e-mail (v1.0)
+
+`EmailVerificationOverlay.qml`. Segue o mockup do escopo: e-mail mascarado
+(`d***@example.com` — a tela não precisa do endereço inteiro), campo de 6
+dígitos, contador de expiração (`MM:SS`) e contador de reenvio.
+
+**Os dois contadores não são timers de UI.** Eles vêm de
+`bridge.verificationSecondsUntilExpiry`/`...UntilResend`, que o Bridge
+calcula a partir dos timestamps persistidos no banco
+(`expires_at`/`resend_available_at`). O `Timer` do QML só decrementa a
+exibição entre atualizações — fechar e reabrir o JARVIS mostra o tempo real
+restante, nunca um contador reiniciado. Toda a validação (expirou? pode
+reenviar?) acontece no backend; o frontend nunca é autoridade sobre isso.
+
+Sem SMTP configurado, o overlay diz claramente que o envio não está
+configurado e que a conta continua funcionando — nunca finge ter enviado.
+
+## Correções visuais da v1.0
+
+**Overflow do `VoiceSetupOverlay`** — as linhas rótulo/valor (Idioma,
+Tamanho, Licença, **Origem**) eram `Row`s com um espaçador de largura fixa
+(`parent.width - 160`). Com a janela estreita, ou com um valor longo como
+`alphacephei.com (mantenedores oficiais do Vosk)`, o texto vazava para fora
+do cartão. Agora cada linha é um `Item` com rótulo ancorado à esquerda,
+valor à direita, e o valor limitado pelo espaço restante — quebra linha em
+vez de vazar. O mesmo padrão foi usado na linha de e-mail do `AccountPanel`.
 
 ## Voz (v0.9 — setup do modelo e push-to-talk corrigido)
 

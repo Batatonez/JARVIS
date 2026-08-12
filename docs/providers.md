@@ -1,6 +1,10 @@
 # Provider Router
 
-> **Status: fundação aditiva (pré-v1.0), não conectada ao `JarvisCore`/`JarvisApplication` ainda.** Nada neste documento altera o comportamento do JARVIS estável (v0.9) — ver `docs/architecture.md` para a arquitetura em produção hoje. Este é o primeiro passo de uma etapa futura de multi-provider, deliberadamente isolada.
+> **Status (v1.0): conectado ao fluxo real do aplicativo.** Com `OPENROUTER_API_KEY` no ambiente, toda conversa do JARVIS passa por aqui:
+> ```
+> JarvisApplication → Orchestrator → AIService → ProviderRouter → OpenRouterProvider → modelo
+> ```
+> O adaptador entre a interface `AIService` (que o Orchestrator já conhecia desde a v0.3) e o router é `services/provider_ai_service.py::ProviderRouterAIService`. Nenhuma camada acima dele precisou mudar.
 
 ## Por que existe
 
@@ -32,6 +36,26 @@ JARVIS
 | `services/providers/router.py` | `ProviderRouter` — `select()`/`execute()`/`health()` |
 | `services/providers/secrets.py` | `mask_secret()` — nunca expor uma API key inteira |
 | `services/providers/ruflo_coordinator.py` | `RufloCoordinator` — fronteira de coordenação, ver `docs/ruflo-integration.md` |
+| `services/provider_ai_service.py` | `ProviderRouterAIService` — adapta `AIService` ao router (v1.0) |
+| `services/context_builder.py` | Sanitização + truncagem do contexto que sai da máquina (v1.0) |
+
+## Sessão de conversa sobre uma API stateless (v1.0)
+
+A API da OpenRouter é **stateless**: ao contrário do Claude Agent SDK (que mantém a sessão do lado dele), aqui o contexto precisa ser reenviado a cada chamada. `ProviderRouterAIService` resolve isso guardando o histórico da sessão em RAM e reenviando os últimos turnos via `RouteRequest.history` — é o que transforma requisições isoladas na "sessão contínua" que o resto do JARVIS espera do contrato `start`/`ask`/`close`.
+
+Há um teto de turnos reenviados (`max_history_messages`, padrão 20): sem ele, o custo e a latência de cada chamada cresceriam indefinidamente numa conversa longa.
+
+O `system_prompt` combina a identidade de runtime (`services/runtime_identity.py`) com a memória do usuário já **sanitizada e truncada** por `JarvisCore.build_memory_context()` — ver `docs/security.md`, seção "Privacidade ao chamar a IA".
+
+## Orçamento de tokens
+
+`JARVIS_PROVIDER_MAX_TOKENS` (padrão **1024**). O padrão não é acidental: no smoke test manual da v1.0, com um orçamento de 32 tokens, a rota `openrouter/free` foi servida por `nvidia/nemotron-nano-9b-v2:free` — um modelo de raciocínio que consumiu os 32 tokens inteiros em raciocínio interno e devolveu `content: ""`. A v1.0 trata resposta vazia como **falha explícita** (nunca persiste uma mensagem vazia como se fosse resposta válida) e usa um orçamento realista por padrão.
+
+## Streaming — por que não nesta versão
+
+O HUD já tem o contrato de eventos (`response.started`/`delta`/`completed`/`failed`) e o `MessageListModel.update_content()` pronto. Ainda assim, a v1.0 entrega **resposta completa**, deliberadamente: streaming honesto exigiria trocar o transporte (`urllib` bloqueante em executor) por um cliente que consuma SSE incrementalmente, propagar deltas por `Orchestrator`/`AIService` (cujo contrato hoje é `ask() -> str`), e refazer a interação com cancelamento. Numa versão cujo objetivo é **estabilização**, isso é risco desproporcional.
+
+O que **não** foi feito: nenhum "streaming falso" (quebrar a resposta pronta em pedaços e emitir deltas fingindo progresso). Streaming real é a próxima evolução.
 
 ## `ProviderRouter`
 
@@ -91,10 +115,24 @@ Nenhum dos providers planejados tem classe/import associado — só a entrada de
 
 `tests/test_provider_router.py` (22 testes) e `tests/test_ruflo_coordinator.py` (4 testes) — 100% offline, sem nenhuma requisição real. Cobrem: key ausente, provider configurado, seleção `openrouter/free`, normalização de resposta/usage/custo, erro de rede, rate limit (429), erro de servidor (5xx), provider não configurado, free-only recusando resposta não confirmada como grátis (dois cenários: `served_model` pago sem custo, e custo > 0 explícito), registry (implementado vs. planejado), nenhum secret em log/corpo da requisição, e cancelamento (`asyncio.Task.cancel()` em pleno voo).
 
-## O que esta etapa **não** faz
+## O que a v1.0 **não** faz
 
-- Não conecta `ProviderRouter` a `JarvisCore`/`JarvisApplication`/`Orchestrator` — é aditivo, isolado, só testado diretamente.
-- Não implementa Groq/Gemini/Mistral/NVIDIA de verdade — só registry.
-- Não altera a integração Anthropic existente.
-- Não faz nenhuma chamada real durante os testes nem durante esta implementação (ver `docs/ruflo-integration.md` para o smoke test manual opcional, que exige autorização explícita antes de rodar).
-- Não implementa multiagente paralelo real (`jarvis-coordinator`/`jarvis-architect`/`jarvis-coder`/`jarvis-tester`/`jarvis-reviewer` cada um escolhendo modelo via `ProviderRouter`) — a arquitetura já suporta isso (`RouteRequest` é por-chamada, sem estado global), mas a integração de verdade é trabalho futuro.
+- Não implementa Groq/Gemini/Mistral/NVIDIA de verdade — só registry `NOT_IMPLEMENTED`.
+- Não roteia a integração Anthropic existente por este router (o `ClaudeAgentProvider` continua como caminho separado, escolhido em `create_ai_service()` quando não há `OPENROUTER_API_KEY`).
+- Não faz streaming (acima).
+- Não faz nenhuma chamada real durante os testes — o transporte HTTP é injetável e os testes usam um fake.
+- Não implementa multiagente paralelo real (`jarvis-coordinator`/`jarvis-architect`/... cada um com seu modelo). A arquitetura suporta (`RouteRequest` é por-chamada, sem estado global), mas a integração é trabalho futuro.
+
+## Smoke test manual real (validado)
+
+Executado na v1.0, com autorização explícita, uma única chamada:
+
+| Campo | Valor |
+|---|---|
+| Provider / modelo solicitado | `openrouter` / `openrouter/free` |
+| Modelo **servido** | `nvidia/nemotron-nano-9b-v2:free` |
+| HTTP | 200 |
+| Custo relatado | `0.0 USD`, `is_free: true` |
+| `free_only` respeitado | sim — a resposta só foi aceita porque `cost.is_free` era `True` |
+
+Note que `served_model ≠ requested_model`: isso é **esperado** num roteador agregador. A prova de custo zero veio dos dados retornados (`usage.cost`), nunca do nome pedido.

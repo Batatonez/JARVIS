@@ -61,7 +61,7 @@ class _BridgeTestCase(unittest.IsolatedAsyncioTestCase):
     async def _bridge_with_session(self, *, ai_service=None, voice_service_factory=None, dev_mode: bool = False):
         bridge = self._bridge(ai_service=ai_service, voice_service_factory=voice_service_factory, dev_mode=dev_mode)
         await bridge.initialize()
-        await bridge._register("alice", "Alice", "senha-forte-123")
+        await bridge._register("alice", "Alice", "alice@example.com", "senha-forte-123")
         return bridge
 
 
@@ -123,7 +123,7 @@ class BridgeAccountTests(_BridgeTestCase):
         bridge = self._bridge()
         await bridge.initialize()
         try:
-            bridge.register("alice", "Alice", "senha-forte-123")
+            bridge.register("alice", "Alice", "alice@example.com", "senha-forte-123")
             for _ in range(30):
                 if bridge.authenticated:
                     break
@@ -141,12 +141,12 @@ class BridgeAccountTests(_BridgeTestCase):
         bridge = self._bridge()
         await bridge.initialize()
         try:
-            await bridge._register("alice", "Alice", "senha-forte-123")
+            await bridge._register("alice", "Alice", "alice@example.com", "senha-forte-123")
 
             received: list[str] = []
             bridge.authErrorRaised.connect(lambda message: received.append(message))
 
-            await bridge._register("alice", "Outra Alice", "outra-senha-456")
+            await bridge._register("alice", "Outra Alice", "outra@example.com", "outra-senha-456")
 
             self.assertEqual(len(received), 1)
             self.assertEqual(bridge.currentUser["displayName"], "Alice")  # sessão original preservada
@@ -157,7 +157,7 @@ class BridgeAccountTests(_BridgeTestCase):
         bridge = self._bridge()
         await bridge.initialize()
         try:
-            await bridge._register("alice", "Alice", "senha-forte-123")
+            await bridge._register("alice", "Alice", "alice@example.com", "senha-forte-123")
             await bridge._logout()
             self.assertFalse(bridge.authenticated)
 
@@ -371,7 +371,7 @@ class BridgeVoiceTests(_BridgeTestCase):
 
         bridge = self._bridge(voice_service_factory=_voice_factory, dev_mode=dev_mode)
         await bridge.initialize()
-        await bridge._register("alice", "Alice", "senha-forte-123")
+        await bridge._register("alice", "Alice", "alice@example.com", "senha-forte-123")
         return bridge
 
     async def test_microphone_available_and_stt_ready_reflect_status(self) -> None:

@@ -85,14 +85,37 @@ class UnavailableAIService(AIService):
 def create_ai_service(settings: "Settings") -> AIService:
     """Decide qual AIService usar a partir da configuração:
 
-        API key configurada  -> ClaudeAgentProvider
-        API key ausente       -> UnavailableAIService
+        OPENROUTER_API_KEY   -> ProviderRouterAIService (v1.0, via ProviderRouter)
+        ANTHROPIC_API_KEY    -> ClaudeAgentProvider
+        nenhuma das duas     -> UnavailableAIService
+
+    OpenRouter tem precedência porque é o caminho que passa pelo
+    `ProviderRouter` — a camada que dá ao JARVIS controle real de
+    provider/modelo/custo (`free_only`), ver docs/providers.md. O
+    ClaudeAgentProvider continua como estava para quem tiver uma chave
+    Anthropic e nenhuma de OpenRouter.
 
     Nunca levanta exceção: se a configuração existir mas o provider falhar
     ao ser construído, cai de volta para `UnavailableAIService` (fallback
-    seguro) em vez de derrubar o JARVIS. A conexão real só é tentada depois,
-    em `AIService.start()` — construir o provider aqui não conecta nada.
+    seguro) em vez de derrubar o JARVIS. Nenhuma conexão é feita aqui —
+    construir um provider não toca rede.
     """
+    if settings.has_openrouter_api_key():
+        try:
+            from services.provider_ai_service import ProviderRouterAIService
+            from services.providers.registry import build_default_registry
+            from services.providers.router import ProviderRouter
+
+            router = ProviderRouter(build_default_registry())
+            return ProviderRouterAIService(
+                router,
+                free_only=settings.free_only,
+                max_tokens=settings.provider_max_tokens,
+                timeout_s=settings.provider_timeout_s,
+            )
+        except Exception:
+            logger.exception("Falha ao inicializar o ProviderRouter; tentando os demais providers.")
+
     if not settings.has_anthropic_api_key():
         return UnavailableAIService()
 

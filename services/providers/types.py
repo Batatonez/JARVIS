@@ -60,6 +60,12 @@ class ProviderDescriptor:
 class RouteRequest:
     prompt: str
     system_prompt: str | None = None
+    # Histórico da conversa ANTES de `prompt`, como pares (role, content) com
+    # role em {"user", "assistant"}. Existe porque a API da OpenRouter é
+    # stateless: ao contrário do Claude Agent SDK (que mantém a sessão do
+    # lado dele), aqui o contexto precisa ser reenviado a cada chamada.
+    # Tupla (não lista) para manter o dataclass congelado/hashável.
+    history: tuple[tuple[str, str], ...] = ()
     max_tokens: int | None = None
     temperature: float | None = None
     timeout_s: float | None = None

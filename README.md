@@ -8,7 +8,9 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
-🚧 **JARVIS v0.9 — Accounts, Persistent Chats & Voice Input Fix.** Contas locais (usuário/senha, hash `scrypt`, sessão persistida entre execuções), sidebar retrátil com chats persistidos em SQLite (busca, agrupamento por data, renomear/excluir), memória isolada por conta (com migração controlada da memória legacy pré-contas), fundação FREE/PRO sem cobrança real, e a correção de verdade do microfone: o botão de voz agora distingue corretamente "modelo de reconhecimento ainda não instalado" de "sem microfone" de "erro real", com um fluxo de instalação explícito do modelo Vosk (download só sob consentimento, nunca automático) e captura adaptada ao sample rate real do dispositivo (não mais 16 kHz fixo). HUD v0.8 preservado (mesmo design system, mesmo núcleo de IA). Ainda sem Claude real, Ruflo, MCP/tools ou billing — ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo e [`frontend/README.md`](frontend/README.md) para contas/sidebar/voz no HUD.
+✅ **JARVIS v1.0 — AI integrada, contas endurecidas e verificação de e-mail.** Primeira versão em que o JARVIS **conversa de verdade**: o `ProviderRouter` está conectado ao fluxo real do aplicativo (`JarvisApplication → AIService → ProviderRouter → OpenRouter`), com o JARVIS — não o Ruflo — decidindo provider, modelo e custo. Modo `free_only` ligado por padrão: nunca há queda silenciosa para um modelo pago; sem rota gratuita, o erro é explícito (`NO_FREE_MODEL_AVAILABLE`).
+
+Sobre a base da v0.9, esta versão também endurece o que já existia: token de sessão agora guardado só como hash (com migração que **não** invalidou sessões existentes), proteção contra força bruta no login, verificação real de e-mail (código de 6 dígitos, expira em 5 min, reenvio após 60s, uso único), sistema de migração de banco versionado e transacional, e sanitização do contexto enviado à IA. Sem billing, sem cloud, sem Groq/Gemini/Mistral/NVIDIA reais — ver [`docs/security.md`](docs/security.md) para o modelo de segurança completo (e suas limitações honestas), [`docs/providers.md`](docs/providers.md) para o Provider Router e [`docs/architecture.md`](docs/architecture.md) para a arquitetura.
 
 ## Como executar
 
@@ -36,16 +38,22 @@ python main.py
 python -m frontend
 ```
 
-Sem `ANTHROPIC_API_KEY` configurada, o JARVIS (em qualquer um dos dois) funciona normalmente e avisa que a IA não está configurada (não finge uma resposta). Para conversar de verdade com o Claude, defina a variável de ambiente antes de rodar (veja [`.env.example`](.env.example)):
+Sem nenhuma chave de IA configurada, o JARVIS (em qualquer um dos dois) abre e funciona normalmente, avisando que a IA não está configurada — nunca finge uma resposta, nunca trava.
+
+**Para conversar de verdade (recomendado — OpenRouter, rota gratuita):**
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sua-chave-aqui"
-python main.py        # ou: python -m frontend
+$env:OPENROUTER_API_KEY = "sua-chave-aqui"
+python -m frontend        # ou: python main.py
 ```
 
-Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit` (alias `/quit`). O terminal continua sem contas (fala direto com `JarvisApplication`, memória global em `memory/`) — contas, sidebar e chats persistidos são só do HUD nesta versão. No HUD, os mesmos conceitos existem como controles visuais (ver [`frontend/README.md`](frontend/README.md)).
+Com isso o JARVIS usa o `ProviderRouter` com `free_only` ligado por padrão: só rotas gratuitas, e **nunca** um fallback silencioso para modelo pago (ver [`docs/providers.md`](docs/providers.md)). `ANTHROPIC_API_KEY` continua funcionando como alternativa (Claude Agent SDK) — OpenRouter tem precedência quando as duas existem. Nenhuma chave vai para código, banco ou Git: sempre lidas do ambiente (veja [`.env.example`](.env.example)).
 
-**Contas (só no HUD):** ao abrir o HUD pela primeira vez, é preciso criar uma conta local (usuário/senha — nunca e-mail, nunca dado desnecessário) ou entrar em uma já existente. A sessão fica salva localmente (cifrada via Windows DPAPI quando disponível) para continuar logado nas próximas execuções, até um logout explícito. Cada conta tem seus próprios chats e sua própria memória — ver [`docs/architecture.md`](docs/architecture.md), seção Contas.
+Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit` (alias `/quit`). O terminal continua sem contas (fala direto com `JarvisApplication`, memória global em `memory/`) — contas, sidebar e chats persistidos são só do HUD.
+
+**Contas (só no HUD):** ao abrir o HUD pela primeira vez, é preciso criar uma conta local (usuário, nome, e-mail e senha) ou entrar em uma já existente. A sessão fica salva localmente (token cifrado via Windows DPAPI, nunca a senha) para continuar logado nas próximas execuções, até um logout explícito. Cada conta tem seus próprios chats e sua própria memória.
+
+**Verificação de e-mail (v1.0):** contas novas recebem um código de 6 dígitos por e-mail (expira em 5 min, reenvio após 60s). Isso exige SMTP configurado (`JARVIS_SMTP_HOST`, `JARVIS_EMAIL_FROM`, ...); **sem SMTP o JARVIS não finge ter enviado** — diz claramente que o envio não está configurado, e a conta continua utilizável. Contas criadas na v0.9 (sem e-mail) continuam funcionando e podem adicionar um e-mail depois pelo painel de conta. Detalhes em [`docs/security.md`](docs/security.md).
 
 **Voz (opcional, só no HUD):** `requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`, `pyttsx3` — nenhuma exige GPU). A síntese de fala (TTS) funciona assim que essas dependências estiverem instaladas, usando vozes já existentes no Windows. O reconhecimento de fala (STT) exige, além disso, um modelo Vosk instalado — agora **instalável de dentro do próprio HUD**: clique no microfone sem o modelo instalado abre um passo explícito "Baixar modelo de voz (~45 MB)", mostrando origem/licença/tamanho antes de qualquer download (nunca automático). Sem o modelo, o botão de microfone mostra claramente "configuração necessária" (nunca some nem finge estar pronto) e o resto do JARVIS funciona normalmente por texto — ver [`frontend/README.md`](frontend/README.md#voz-v09--setup-do-modelo-e-push-to-talk-corrigido).
 
@@ -54,25 +62,34 @@ Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias 
 ```
 JARVIS HUD (PySide6/QML)                          Terminal
   ↓                                                  ↓
-AccountManager   (implementado — v0.9 — app/account_manager.py — só no HUD: contas, sessão, chats, memória por usuário)
+AccountManager   (app/account_manager.py — só no HUD: contas, sessão, chats, memória por usuário, verificação de e-mail)
   ↓ (dono do ciclo de vida por sessão logada)
-JarvisApplication          (implementado — app/application.py — a API estável para qualquer frontend)
-  ├→ VoiceService           (implementado — v0.7/v0.9 — services/voice_service.py — STT/TTS, só usado pelo HUD)
+JarvisApplication          (app/application.py — a API estável para qualquer frontend)
+  ├→ VoiceService           (services/voice_service.py — STT/TTS, só usado pelo HUD)
   ↓
-JarvisCore / Orchestrator   (implementado — app/core.py, app/orchestrator.py)
+JarvisCore / Orchestrator   (app/core.py, app/orchestrator.py)
   ↓
-Claude Code                 (arquitetura pronta via ClaudeAgentProvider/Claude Agent SDK — services/claude_agent_provider.py)
+AIService                   (services/ai_service.py — abstração)
+  ├→ ProviderRouterAIService → ProviderRouter → OpenRouter   (v1.0, com OPENROUTER_API_KEY)
+  ├→ ClaudeAgentProvider     → Claude Agent SDK              (com ANTHROPIC_API_KEY)
+  └→ UnavailableAIService                                     (sem nenhuma chave — app continua funcionando)
   ↓
-Ferramentas / Skills / MCP / Subagentes
+Ferramentas / Skills / MCP / Subagentes   (planejado)
   ↓
-Sistema operacional / APIs / serviços
+Sistema operacional / APIs / serviços      (planejado)
 ```
 
-O terminal continua falando direto com `JarvisApplication` (sem `AccountManager`, sem contas) — só o HUD ganhou a camada de contas nesta versão.
+O terminal continua falando direto com `JarvisApplication` (sem `AccountManager`, sem contas) — só o HUD tem a camada de contas.
 
-Detalhes completos, incluindo o que está implementado vs. preparado vs. planejado (e a direção futura com Ruflo para orquestração multiagente), em [`docs/architecture.md`](docs/architecture.md). API pública da Application Layer em [`docs/application-api.md`](docs/application-api.md); arquitetura do HUD em [`frontend/README.md`](frontend/README.md).
+A cadeia de IA na v1.0:
 
-**Fundação experimental (pré-v1.0, não conectada ao app ainda):** um `ProviderRouter` (`services/providers/`) para o JARVIS decidir provider/modelo/custo/fallback de IA sem depender do model routing interno do Ruflo — ver [`docs/providers.md`](docs/providers.md) e [`docs/ruflo-integration.md`](docs/ruflo-integration.md).
+```
+JarvisApplication → Orchestrator → AIService → ProviderRouter → OpenRouter → modelo
+```
+
+`ProviderRouter` é a **única autoridade** sobre provider/modelo/custo. O Ruflo (opcional, ferramenta de desenvolvimento) coordena agentes e **nunca** decide modelo — ver [`docs/ruflo-integration.md`](docs/ruflo-integration.md) para o bug de model routing que motivou essa separação.
+
+Detalhes completos, incluindo o que está implementado vs. preparado vs. planejado, em [`docs/architecture.md`](docs/architecture.md). API pública da Application Layer em [`docs/application-api.md`](docs/application-api.md); Provider Router em [`docs/providers.md`](docs/providers.md); segurança em [`docs/security.md`](docs/security.md); arquitetura do HUD em [`frontend/README.md`](frontend/README.md).
 
 ## Estrutura de pastas
 
@@ -82,9 +99,9 @@ Detalhes completos, incluindo o que está implementado vs. preparado vs. planeja
 | [`memory/`](memory/) | Memória persistente sobre o usuário (perfil, preferências) |
 | [`projects/`](projects/) | Contexto persistente de projetos acompanhados pelo JARVIS |
 | [`daily/`](daily/) | Registros diários (`YYYY-MM-DD.md`) |
-| [`app/`](app/) | Aplicativo/núcleo principal — `AccountManager` (contas/sessão, v0.9, só HUD), `JarvisApplication` (fronteira estável), terminal, `JarvisCore`, `Orchestrator`, comandos, estado (async) |
-| [`services/`](services/) | Serviços internos — memória (leitura), IA (`ClaudeAgentProvider`/`UnavailableAIService`), contas/sessão/conversas (SQLite), modelo de voz (`VoiceModelManager`), identidade de runtime, event bus |
-| [`data/`](data/) | Dados locais pessoais (v0.9): banco de contas/chats, sessão local, modelo de voz baixado — **nunca no Git** (ver `.gitignore`) |
+| [`app/`](app/) | Aplicativo/núcleo principal — `AccountManager` (contas/sessão/verificação, só HUD), `JarvisApplication` (fronteira estável), terminal, `JarvisCore`, `Orchestrator`, comandos, estado (async) |
+| [`services/`](services/) | Serviços internos — memória (leitura + sanitização de contexto), IA (`ProviderRouterAIService`/`ClaudeAgentProvider`/`UnavailableAIService`), `providers/` (Provider Router), contas/sessão/conversas/verificação de e-mail (SQLite), envio de e-mail, modelo de voz, identidade de runtime, event bus |
+| [`data/`](data/) | Dados locais pessoais: banco de contas/chats, sessão local, modelo de voz baixado — **nunca no Git** (ver `.gitignore`) |
 | [`frontend/`](frontend/) | HUD gráfico (PySide6/QML) — `python -m frontend` |
 | [`integrations/`](integrations/) | Integrações externas (MCP, APIs, serviços de terceiros) — futuro |
 | [`tools/`](tools/) | Ferramentas que o JARVIS poderá usar, classificadas por nível de risco — futuro |
@@ -96,8 +113,14 @@ Pastas ainda não implementadas contêm um `README.md` explicando sua finalidade
 
 ## Funcionalidades
 
-**Implementado (JARVIS v0.9 — Accounts, Persistent Chats & Voice Input Fix, sobre a base do v0.5–v0.8):**
-- Contas locais no HUD: criar conta (usuário/senha, hash `scrypt`, salt via `secrets`, comparação em tempo constante), entrar, sair; sessão persistida entre execuções (token opaco, nunca a senha, cifrado via Windows DPAPI quando disponível); isolamento garantido no nível de query — um usuário nunca lê/escreve dado de outro (ver `services/user_repository.py`, `services/session_repository.py`, `services/session_store.py`)
+**Implementado (JARVIS v1.0 — AI integrada + hardening, sobre a base do v0.5–v0.9):**
+- **IA real conectada ao fluxo do app**: `JarvisApplication → Orchestrator → AIService → ProviderRouter → OpenRouter → modelo`. O `ProviderRouterAIService` (`services/provider_ai_service.py`) adapta a interface `AIService` já existente ao router, mantendo a sessão de conversa em RAM e reenviando o histórico (a API da OpenRouter é stateless, ao contrário do Agent SDK) — nada acima do adaptador precisou mudar
+- **`free_only` ligado por padrão**: verificação em duas camadas (nunca solicita modelo fora de `free_models()`; e confere `served_model`/`cost` da resposta antes de aceitá-la). Sem rota gratuita ⇒ `NO_FREE_MODEL_AVAILABLE`, nunca queda silenciosa para pago
+- **Verificação de e-mail**: código de 6 dígitos, expira em 5 min, reenvio após 60s, uso único, novo invalida o anterior, máximo de 5 tentativas — tudo validado no backend contra timestamps persistidos (o QML só decrementa a exibição). Sem SMTP configurado, o JARVIS **não finge** ter enviado
+- **Hardening de auth**: token de sessão guardado só como SHA-256 no banco (migração converteu os existentes **sem invalidar sessões**), backoff progressivo contra força bruta (nunca bloqueio permanente), defesa contra enumeração de contas por mensagem e por timing
+- **Migração de banco versionada e transacional** (`PRAGMA user_version`): falha ⇒ rollback + erro claro, banco preservado. Nunca recriamos o banco para "resolver" divergência de schema
+- **Sanitização do contexto enviado à IA** (`services/context_builder.py`): data minimization (teto de caracteres) + redação de segredos que tenham vazado para dentro da memória — aplicada num ponto único, então todo provider recebe memória já tratada
+- Contas locais no HUD: criar conta (usuário/nome/e-mail/senha, hash `scrypt`, salt via `secrets`, comparação em tempo constante), entrar, sair; sessão persistida entre execuções; isolamento garantido no nível de query — um usuário nunca lê/escreve dado de outro (ver [`docs/security.md`](docs/security.md))
 - Sidebar retrátil (expandida/colapsada, animada) com "+ Novo chat", busca local, conversas agrupadas por data (Hoje/Ontem/Últimos 7 dias/Mais antigos), conta/plano no rodapé — substitui o antigo botão solto "NOVA CONVERSA"
 - Chats persistidos em SQLite (`services/local_database.py`, `services/conversation_repository.py`, stdlib `sqlite3`, sem ORM): criar, listar, ordenar, buscar, renomear, excluir, carregar conversa antiga — sempre escopado ao usuário logado; título derivado das primeiras palavras da primeira mensagem (sem IA)
 - Memória isolada por conta (`data/users/<id>/memory/`), com migração controlada da memória legacy pré-contas (`memory/profile.md`/`preferences.md`) para a primeira conta criada no ambiente — original nunca apagado/movido, nunca sobrescreve memória que a conta já tenha
@@ -109,26 +132,27 @@ Pastas ainda não implementadas contêm um `README.md` explicando sua finalidade
 - `VoiceService`/`JarvisApplication`/`Orchestrator`/permissões/cancelamento/stream de eventos: tudo do v0.5–v0.8 preservado sem regressão (ver [`docs/application-api.md`](docs/application-api.md))
 - Núcleo executável por terminal, assíncrono (`python main.py`), sem contas (fala direto com `JarvisApplication`, memória global)
 - Comandos: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit`
-- Arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`), condicionada a `ANTHROPIC_API_KEY`; sem a chave, fallback automático e seguro para `UnavailableAIService`
+- Arquitetura do **Claude Agent SDK** preservada (`ClaudeAgentProvider`), condicionada a `ANTHROPIC_API_KEY`; sem nenhuma chave, fallback automático e seguro para `UnavailableAIService` — o app abre e o chat não quebra
+- 300 testes automatizados, todos offline (nenhum gasta requisição, envia e-mail, usa microfone real ou chama Anthropic)
 
 **Preparado, mas não ativado:**
-- Conexão real com Claude e sessão de conversa contínua (arquitetura pronta e testada com fakes; não validada com IA real nesta etapa — sem API key neste ambiente)
-- Fluxo completo voz → Claude → voz (fala transcrita já cai no chat como texto revisável; a resposta inteligente de verdade depende de uma versão futura ativar o Claude)
-- Streaming real token-a-token: contrato de eventos já existe (`response.delta`), testado com eventos fake — falta só o backend emitir de verdade
-- Sincronização de contas/chats na nuvem (arquitetura local-first não impede isso no futuro; nada disso existe agora)
+- Streaming real token-a-token: o contrato de eventos existe (`response.delta`) e o HUD já sabe reagir (testado com eventos fake), mas a v1.0 entrega resposta completa — streaming honesto sobre a API da OpenRouter é a próxima evolução (ver [`docs/providers.md`](docs/providers.md))
+- Groq, Gemini, Mistral, NVIDIA: presentes no registry como `NOT_IMPLEMENTED`, sem classe real
+- Sincronização de contas/chats na nuvem (arquitetura local-first não impede; nada disso existe agora)
 - Cobrança real do plano PRO (estrutura de entitlements pronta; sem Stripe/Pix/checkout)
+- Fluxo completo voz → IA → voz: a transcrição cai no campo de texto para revisão, e a resposta pode ser falada via TTS — o que falta é só o usuário não precisar apertar enviar
 
 **Planejado:**
-- API Claude real
-- Verificação de e-mail / recuperação de conta
-- Backend/cloud e billing real
+- Streaming token-a-token de verdade
+- Providers adicionais reais (Groq, Gemini, Mistral, NVIDIA, Anthropic pelo mesmo router)
+- Backend/cloud, auth remota e billing real
+- Recuperação de senha / revogação remota de sessão
 - Wake word / escuta permanente (por enquanto é só push-to-talk, de propósito)
 - Ferramentas para interagir com o computador (READ / ACTION / DANGEROUS), MCPs, Skills e Hooks do Claude Code, subagentes especializados
-- **Ruflo** ([github.com/ruvnet/ruflo](https://github.com/ruvnet/ruflo)) como camada opcional de orquestração multiagente para tarefas complexas — não instalado, não obrigatório para o JARVIS funcionar
+- **Ruflo** como camada opcional de orquestração multiagente — hoje é só ferramenta de desenvolvimento, e nunca decide provider/modelo (ver [`docs/ruflo-integration.md`](docs/ruflo-integration.md))
 - Memória avançada (embeddings, busca semântica)
 - Tela de configurações, temas alternativos, empacotamento como aplicativo Windows instalável
-- Integração com outras APIs e serviços externos
 
 ## Aviso
 
-Este projeto está em desenvolvimento inicial. Boa parte das funcionalidades listadas acima ainda não existe em código — ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo de implementado vs. preparado vs. planejado.
+O JARVIS v1.0 é uma base estável e funcional, mas continua em evolução: várias capacidades listadas como *planejadas* acima ainda não existem em código. Ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento de implementado vs. preparado vs. planejado, e [`docs/security.md`](docs/security.md) para as limitações de segurança conhecidas (incluindo o fato de o plano FREE/PRO ser local e alterável por quem controla a máquina).

@@ -10,6 +10,15 @@ futuro) deve usar para falar com o JARVIS — nunca `JarvisCore`, `Orchestrator`
 usuário — ver `docs/architecture.md`, seção "Contas locais"). A API abaixo
 não mudou; o que mudou é quem a chama no caso do HUD.
 
+**v1.0 — a API pública também não mudou.** A IA real (OpenRouter via
+`ProviderRouter`) entrou *abaixo* desta camada, atrás da mesma interface
+`AIService` que o `Orchestrator` já usava. `send_message()` continua com a
+mesma assinatura, os mesmos `status`, e os mesmos eventos. O que aumentou
+foi o vocabulário de erro: `AppErrorCode` ganhou
+`PROVIDER_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_RATE_LIMITED`,
+`NO_FREE_MODEL_AVAILABLE` e os códigos de verificação de e-mail — todos
+estruturados, nunca stack trace.
+
 ```python
 from app.core import JarvisCore
 from app.application import JarvisApplication

@@ -115,6 +115,11 @@ class OpenRouterProvider(AIProvider):
         messages = []
         if request.system_prompt:
             messages.append({"role": "system", "content": request.system_prompt})
+        # Histórico primeiro, prompt atual por último — a ordem é o que dá
+        # sentido de conversa ao modelo (ver RouteRequest.history).
+        for role, content in request.history:
+            if role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": request.prompt})
 
         payload = {
