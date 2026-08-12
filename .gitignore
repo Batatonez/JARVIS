@@ -48,13 +48,16 @@ logs/
 tmp/
 temp/
 
-# --- Bancos de dados locais (futuro) ---
+# --- Bancos de dados locais ---
 *.sqlite3
 *.db
 
-# --- Modelos de voz locais (v0.7) — nunca versionados; ver
-# frontend/README.md para o comando de download manual do modelo Vosk. ---
-voice_models/
+# --- Dados locais do JARVIS (v0.9): contas, hashes de senha, sessões,
+# chats persistidos, memória por conta e modelo de voz baixado
+# (data/jarvis.db, data/users/, data/session.local, data/models/vosk/...).
+# Tudo aqui é pessoal — nunca vai para o Git. Ver config/settings.py e
+# docs/architecture.md, seção Contas. ---
+data/
 
 # --- IDE / editores ---
 .vscode/

@@ -2,18 +2,19 @@
 
 O HUD do JARVIS — interface gráfica real do projeto, introduzida no v0.5,
 refinada visualmente no v0.6 (HUD Refinement / UX Foundation), com voz desde
-o v0.7 (Voice Foundation), e com um segundo refinamento visual profundo no
-**v0.8 (HUD Overhaul / UX 2.0)**. PySide6 (Qt for Python) + Qt Quick/QML. O
-terminal (`python main.py`, `app/terminal.py`) continua existindo, separado
-e inalterado — este é um segundo frontend, não uma substituição, e não
-ganhou voz (é um recurso específico do HUD).
+o v0.7 (Voice Foundation), um segundo refinamento visual profundo no v0.8
+(HUD Overhaul / UX 2.0), e **contas locais + chats persistidos + microfone
+corrigido no v0.9 (Accounts, Persistent Chats & Voice Input Fix)**. PySide6
+(Qt for Python) + Qt Quick/QML. O terminal (`python main.py`,
+`app/terminal.py`) continua existindo, separado e inalterado — este é um
+segundo frontend, não uma substituição, e não ganhou contas nem voz (ambos
+são recursos específicos do HUD).
 
-**v0.8 não muda a arquitetura do v0.5/v0.6/v0.7** (HUD → Bridge →
-JarvisApplication continua igual, nenhuma capability nova) — é só
-qualidade visual: design system consolidado, núcleo de IA v3, layout que
-escala em monitores grandes, boot mais elaborado, e acabamento em
-praticamente todo componente. Ver "O que mudou no v0.8" abaixo para o
-resumo, e cada seção de componente para o detalhe.
+**v0.9 muda a arquitetura de entrada do HUD**: antes de qualquer coisa, é
+preciso estar logado (`AuthScreen`) — só depois o HUD de sempre aparece,
+agora com uma sidebar de chats. O design system (`Theme.qml`), o núcleo de
+IA e o resto do HUD v0.8 continuam exatamente iguais. Ver "Contas (v0.9)" e
+"Voz (v0.9)" abaixo para o detalhe.
 
 ## Como executar
 
@@ -22,13 +23,15 @@ pip install -r requirements.txt
 python -m frontend
 ```
 
-Sem `ANTHROPIC_API_KEY` configurada, o HUD abre normalmente e mostra
-`AI OFFLINE` — não trava, não pede credencial, não finge estar conectado.
-`requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`,
-`pyttsx3`); a fala (TTS) funciona assim que elas estão instaladas, mas o
-microfone (STT) só liga depois de baixar manualmente o modelo Vosk — ver
-seção "Voz" abaixo. Sem o modelo, o botão de microfone aparece desabilitado
-e o resto do HUD funciona normalmente.
+Na primeira execução, o HUD mostra a tela de login/criação de conta — é
+preciso criar uma conta local (usuário/senha) antes de usar o resto do HUD
+(ver "Contas" abaixo). Sem `ANTHROPIC_API_KEY` configurada, o HUD abre
+normalmente e mostra `AI OFFLINE` — não trava, não pede credencial, não
+finge estar conectado. `requirements.txt` já inclui as dependências de voz
+(`vosk`, `sounddevice`, `pyttsx3`); a fala (TTS) funciona assim que elas
+estão instaladas, mas o reconhecimento de fala (STT) exige instalar o
+modelo Vosk — agora **de dentro do próprio HUD**, clicando no microfone (ver
+seção "Voz" abaixo).
 
 ## Arquitetura
 
@@ -39,7 +42,10 @@ JARVIS HUD (PySide6 / QML)
 Frontend Bridge (frontend/bridge.py)
         │
         ↓
-JarvisApplication (app/application.py)
+AccountManager (app/account_manager.py) — contas, sessão, chats, memória por usuário
+        │
+        ↓
+JarvisApplication (app/application.py)  — só existe enquanto alguém está logado
         │              \
         ↓                → VoiceService (services/voice_service.py)
 JarvisCore → Orchestrator      ├→ SpeechToTextService (STT)
@@ -49,9 +55,10 @@ AIService / MemoryService / Services
 ```
 
 O QML **nunca** importa nada de `services/`, `app/core.py`,
-`app/application.py`, o Claude Agent SDK, `vosk`, `sounddevice` ou
-`pyttsx3` — só conhece `bridge`, exposto como propriedade de contexto do
-QML (`engine.rootContext().setContextProperty("bridge", bridge)` em
+`app/application.py`, `app/account_manager.py`, o Claude Agent SDK, `vosk`,
+`sounddevice`, `pyttsx3` ou SQLite — só conhece `bridge`, exposto como
+propriedade de contexto do QML
+(`engine.rootContext().setContextProperty("bridge", bridge)` em
 `frontend/launcher.py`). `VoiceService` também não conhece Qt: fala só com
 `SpeechToTextService`/`TextToSpeechService` (abstrações) e emite no mesmo
 `EventBus` interno que `JarvisCore` já usava desde o v0.3 — quem traduz
@@ -59,21 +66,35 @@ tudo isso para QML continua sendo só o Bridge.
 
 ### `frontend/bridge.py` — `JarvisBridge`
 
-Ponte fina entre QML e `JarvisApplication`: sem lógica de domínio, só
-tradução. Expõe Properties Qt (`jarvisState`, `running`, `busy`,
-`memoryAvailable`, `aiConfigured`, `aiBackend`, `aiSessionActive`,
-`activeConversation`, `pendingPermission`, `messages`, `devMode`,
-`canClose`, `voiceAvailable`, `ttsReady`, `voiceOutputEnabled`,
-`voiceLevel`) e Slots (`sendMessage`, `cancelCurrentRequest`,
-`newConversation`, `approvePermission`, `denyPermission`,
-`requestShutdown`, `simulateState` — dev only —, `toggleListening`,
-`cancelListening`, `stopSpeaking`, `setVoiceOutputEnabled`).
+Ponte fina entre QML e `AccountManager`/`JarvisApplication`: sem lógica de
+domínio, só tradução. Expõe Properties Qt de sempre (`jarvisState`,
+`running`, `busy`, `memoryAvailable`, `aiConfigured`, `aiBackend`,
+`aiSessionActive`, `pendingPermission`, `messages`, `devMode`, `canClose`,
+`voiceAvailable`, `ttsReady`, `voiceOutputEnabled`, `voiceLevel`) mais as de
+conta (v0.9): `authenticated`, `currentUser`, `conversations`,
+`currentConversationId`, `sttStatus`, `voiceModelInstalled`,
+`voiceModelDownloadActive`, `voiceModelDownloadProgress`, `voiceModelInfo`.
+Slots de sempre (`sendMessage`, `cancelCurrentRequest`, `approvePermission`,
+`denyPermission`, `requestShutdown`, `simulateState` — dev only —,
+`toggleListening`, `cancelListening`, `stopSpeaking`,
+`setVoiceOutputEnabled`) mais os de conta/chat/voz (v0.9): `register`,
+`login`, `logout`, `startNewConversation`, `openConversation`,
+`searchConversations`, `renameConversation`, `deleteConversation`,
+`downloadVoiceModel`, `cancelVoiceModelDownload`.
 
-**Nunca faz polling.** Na inicialização, chama `JarvisApplication.subscribe()`
-(síncrono — a fila é registrada imediatamente, sem depender de uma task
-ainda rodar) e consome essa fila em uma única task de fundo
-(`_consume_events`). Cada evento relevante dispara uma releitura pontual de
-`get_status()`/`get_messages()` — nunca em loop/timer.
+**`self._app` é uma property (v0.9), não uma referência fixa** — sempre lê
+`self._account.app`, que só existe entre um login e o logout/shutdown
+seguinte. Todo slot que precisa da Application Layer checa
+`self._app is not None` antes de agir.
+
+**Nunca faz polling.** `bridge.initialize()` (chamado uma vez, no início do
+processo) tenta um auto-login a partir da sessão local persistida; a cada
+sessão aberta (auto-login ou login manual), `_enter_session()` chama
+`JarvisApplication.subscribe()` (síncrono — a fila é registrada
+imediatamente, sem depender de uma task ainda rodar) e consome essa fila em
+uma única task de fundo por sessão (`_consume_events`). Cada evento
+relevante dispara uma releitura pontual de `get_status()`/`get_messages()`/
+lista de conversas — nunca em loop/timer.
 
 ### `frontend/message_model.py` — `MessageListModel`
 
@@ -110,7 +131,7 @@ sem tasks órfãs, sem warnings de "Task was destroyed but it is pending".
 
 ```
 frontend/qml/
-├── Main.qml                 janela, layout, boot, resize, shortcuts
+├── Main.qml                 janela, layout, boot, resize, shortcuts, AuthScreen/hudRow
 ├── theme/
 │   ├── Theme.qml             singleton — paleta, spacing, durações, tipografia
 │   └── qmldir
@@ -118,16 +139,53 @@ frontend/qml/
     ├── TitleBar.qml           barra de título própria (move/resize/min/max/close via API nativa do Qt)
     ├── WindowButton.qml       botão de controle de janela
     ├── JarvisCore.qml         núcleo animado — o elemento visual principal
+    ├── AuthScreen.qml         tela de login/criação de conta — v0.9
+    ├── AuthField.qml          campo de texto rotulado (usuário/senha) — v0.9
+    ├── Sidebar.qml            barra lateral retrátil: chats, busca, conta — v0.9
+    ├── SidebarIconButton.qml  botão de ícone (toggle de recolher/expandir) — v0.9
+    ├── SidebarConversationRow.qml  uma linha de conversa na sidebar — v0.9
+    ├── AccountPanel.qml       modal de conta (nome, plano, sair) — v0.9
+    ├── VoiceSetupOverlay.qml  modal de instalação do modelo de voz — v0.9
     ├── ChatPanel.qml          lista de conversa, scroll inteligente, indicador de resposta pendente
     ├── MessageItem.qml        uma mensagem (bloco discreto, não bubble)
     ├── InputBar.qml           entrada multiline + microfone: [texto][MIC][SEND]
-    ├── MicButton.qml          botão de microfone (idle/listening/processing_speech) — v0.7
+    ├── MicButton.qml          botão de microfone — 5 estados (SETUP_REQUIRED/READY/LISTENING/PROCESSING/ERROR) desde o v0.9
     ├── Waveform.qml           nível de voz real durante LISTENING — v0.7
     ├── StatusPanel.qml        faixa de status real (CORE/MEMORY/AI/SESSION/VOICE + OUTPUT ON/OFF)
     ├── StatusIndicator.qml    ponto + label reutilizável
     ├── ActionButton.qml       botão genérico reutilizável (com tooltip embutido)
     └── PermissionOverlay.qml  pedido de permissão (READ/ACTION/DANGEROUS)
 ```
+
+## Contas (v0.9)
+
+**Tela de entrada** (`AuthScreen.qml`): antes de qualquer sessão local
+válida, `Main.qml` mostra só isso — HUD/sidebar ficam com `visible: false`
+(`hudRow`), não só escondidos atrás de um overlay. Segue o mockup pedido
+(JARVIS + "PERSONAL INTELLIGENCE SYSTEM" + ENTRAR/CRIAR CONTA), com o mesmo
+`JarvisCore` em miniatura para consistência visual — não é um formulário web
+genérico. Campos mínimos para criar conta: nome de exibição, usuário, senha
+— sem e-mail (nenhuma função real dependeria disso ainda). `AuthField.qml` é
+um campo rotulado reutilizado nos dois formulários (entrar/criar).
+
+**Sessão persistida**: depois de logar, fechar e reabrir o HUD continua
+logado (token local cifrado via DPAPI — ver `docs/architecture.md`, seção
+"Contas locais") até um logout explícito.
+
+**Sidebar** (`Sidebar.qml`): retrátil (~264px expandida, ~60px colapsada,
+animada), com "+ Novo chat", busca local, conversas agrupadas por data
+(Hoje/Ontem/Últimos 7 dias/Mais antigos — `_recomputeGroups()`, recalculado
+a cada mudança na lista), e o chip de conta/plano no rodapé (avatar com
+inicial, nome, plano). Substitui o antigo botão "NOVA CONVERSA" solto
+abaixo do Core. Quando colapsada, mostra só ícones — o Core reganha o
+espaço horizontal. Clicar no chip de conta abre `AccountPanel.qml` (modal
+simples: nome, `@usuario`, plano, SAIR — não uma tela de configurações
+inteira).
+
+**Isolamento**: a sidebar/chat só mostra o que `bridge.conversations`
+devolve, que já vem filtrado por usuário do lado do Python
+(`AccountManager.list_conversations()`) — o QML nunca decide isolamento,
+só exibe o que já chegou filtrado.
 
 ### `Theme.qml` — design system
 
@@ -277,11 +335,22 @@ da mesma forma. Coberto por `tests/test_qml_smoke.py`
 (`test_permission_overlay_hidden_when_no_pending_request` e
 `test_permission_overlay_visible_with_pending_request`).
 
-## Voz (v0.7) — push-to-talk
+## Voz (v0.9 — setup do modelo e push-to-talk corrigido)
 
 Entrada (STT) e saída (TTS) de voz, ambas offline, ambas opcionais — sem
 nenhuma delas instalada/configurada, o JARVIS funciona normalmente por
 texto (voz é uma capability, não uma dependência).
+
+**O que estava quebrado (v0.7/v0.8) e o que mudou no v0.9**: o botão de
+microfone mostrava só "indisponível" sem dizer por quê — modelo Vosk
+ausente, microfone ausente e qualquer outra falha caíam todas na mesma
+mensagem genérica. `services/stt_service.py` agora distingue os quatro
+casos de verdade (`STTStatus`: `READY`/`SETUP_REQUIRED`/`NO_MICROPHONE`/
+`UNAVAILABLE`), e `VoskSTTProvider` deixou de presumir 16 kHz fixo (que
+podia quebrar/degradar a captura em microfones com outro sample rate
+nativo) — agora detecta a taxa real do dispositivo e reamostra em software.
+Ver `docs/architecture.md`, seção "Diagnóstico e correção do microfone",
+para o relato completo.
 
 ### Providers escolhidos e por quê
 
@@ -308,25 +377,31 @@ só a síntese padrão do SAPI5.
 (MIT, wraps PortAudio, wheel do Windows já traz o binário). Usado só dentro
 de `VoskSTTProvider` — nenhum outro módulo importa `sounddevice`.
 
-### Modelo do Vosk — nunca baixado automaticamente
+### Modelo do Vosk — instalável de dentro do próprio HUD (v0.9)
 
 O JARVIS **não baixa nenhum modelo sozinho**. `services/stt_service.py`
 procura um modelo em `settings.stt_model_path` (por padrão
-`voice_models/vosk-model-small-pt/`, fora do Git — ver `.gitignore`); se não
-encontrar, o STT fica `UNAVAILABLE` e o botão de microfone do HUD aparece
-desabilitado, sem quebrar nada. Para habilitar STT de verdade:
+`data/models/vosk/vosk-model-small-pt/`, fora do Git — ver `.gitignore`,
+movido de `voice_models/` no v0.9); se não encontrar, `MicButton` mostra o
+estado `SETUP_REQUIRED` (badge âmbar, tooltip "Configurar reconhecimento de
+voz"). Passo a passo real, pelo próprio HUD:
 
-```powershell
-# ~50 MB, licença Apache 2.0, hospedado por alphacephei.com (mantenedores do Vosk)
-Invoke-WebRequest -Uri "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip" -OutFile "vosk-model-small-pt.zip"
-Expand-Archive -Path "vosk-model-small-pt.zip" -DestinationPath "voice_models"
-Rename-Item "voice_models\vosk-model-small-pt-0.3" "vosk-model-small-pt"
-Remove-Item "vosk-model-small-pt.zip"
-```
+1. Abra o HUD, logado em uma conta.
+2. Clique no botão de microfone (badge âmbar, ao lado do campo de texto).
+3. O `VoiceSetupOverlay` abre, mostrando idioma (Português - Brasil),
+   tamanho aproximado (~45 MB), licença (Apache 2.0) e origem
+   (`alphacephei.com`, mantenedores oficiais do Vosk) — nada é baixado
+   ainda.
+4. Clique em "BAIXAR MODELO DE VOZ (~45 MB)". Uma barra de progresso real
+   aparece (bytes baixados / total, via `Content-Length` do servidor);
+   "CANCELAR" interrompe a qualquer momento sem deixar arquivo parcial
+   (`VoiceModelManager`, ver `docs/architecture.md`).
+5. Ao terminar, o overlay fecha sozinho e o microfone já fica `READY` — sem
+   precisar reiniciar o HUD (`downloadVoiceModel()` troca o provider de STT
+   da sessão atual na hora).
 
 (Ou aponte `JARVIS_STT_MODEL_PATH` para qualquer outro modelo Vosk já
-baixado.) Depois disso, reinicie o HUD — o botão de microfone liga sozinho
-assim que `voice_available` fica `true`.
+baixado manualmente, se preferir não usar o instalador do HUD.)
 
 ### Push-to-talk: clique, não pressionar-e-segurar
 
@@ -350,9 +425,10 @@ teclado fora do HUD, conforme pedido).
 
 - O HUD **nunca** liga o microfone sozinho — só em resposta a um clique (ou
   `Ctrl+Space`) do usuário.
-- `MicButton.qml` mostra visualmente os três estados possíveis (parado,
-  gravando — violeta pulsando —, transcrevendo); o núcleo central também
-  muda de cor (violeta) durante `LISTENING`, então é impossível não notar.
+- `MicButton.qml` mostra visualmente os 5 estados possíveis (v0.9:
+  `SETUP_REQUIRED`/`READY`/`LISTENING`/`PROCESSING`/`ERROR`, cada um com
+  tooltip própria); o núcleo central também muda de cor (violeta) durante
+  `LISTENING`, então é impossível não notar.
 - **Nenhum áudio é salvo em disco, nem temporariamente.** `VoskSTTProvider`
   processa os frames PCM em streaming, direto da callback do PortAudio para
   o reconhecedor do Vosk (`KaldiRecognizer.AcceptWaveform`) — nada é escrito
@@ -458,9 +534,33 @@ do backend, não um spinner genérico nem texto de resposta inventado.
 
 ## Testes
 
-- `tests/test_bridge.py` — offline, com `JarvisApplication` real sobre
-  `FakeAIService` (mesmos fakes usados pelo backend). Sem GUI, sem QML.
-  Inclui `test_dev_mode_defaults_to_false`.
+- `tests/test_account_manager_auth.py` (v0.9) — 10 cenários de conta contra
+  `AccountManager` real + SQLite temporário: criar conta, username
+  duplicado, senha errada, login correto, logout, sessão persistida entre
+  "execuções", sessão inválida, senha nunca em texto puro (lê a coluna do
+  banco direto), token de uma conta não autentica como outra, sessão
+  expirada é rejeitada e removida.
+- `tests/test_account_manager_conversations.py` (v0.9) — 11 cenários de
+  chat persistido: criar conversa, mensagens salvas via evento
+  (`message.received`/`response.completed`), sobrevive a um restart da
+  Application Layer, persiste entre logout/login, carregar conversa antiga,
+  listar, ordenar (mais recente primeiro), buscar, renomear, excluir,
+  isolamento entre usuários.
+- `tests/test_memory_migration_and_isolation.py` (v0.9) — migração da
+  memória legacy (fixtures temporárias, nunca a memória real do projeto —
+  com um teste dedicado que verifica byte-a-byte que `memory/profile.md`
+  real não foi tocado), não sobrescreve memória já existente, memória
+  isolada por conta.
+- `tests/test_entitlements_and_voice_model_manager.py` (v0.9) — FREE/PRO
+  sem billing, e `VoiceModelManager` inteiro sem rede real: download com
+  `urllib.request.urlopen` substituído por um fake local, progresso,
+  cancelamento no meio do download, erro de rede, e Zip Slip bloqueado com
+  um `.zip` malicioso construído localmente (nunca baixado).
+- `tests/test_bridge.py` — offline, com `AccountManager`/`JarvisApplication`
+  reais sobre `FakeAIService` (mesmos fakes usados pelo backend). Sem GUI,
+  sem QML. `BridgeAccountTests` cobre registro/login/logout pelos slots
+  reais do Bridge, incluindo `authErrorRaised` em username duplicado e
+  senha errada. Inclui `test_dev_mode_defaults_to_false`.
 - `tests/test_message_model.py` — `MessageListModel` isolado: roles,
   `sync()` incremental/reset, `update_content()`.
 - `tests/test_qml_smoke.py` — confirma que `Main.qml` carrega sem
@@ -489,19 +589,28 @@ do backend, não um spinner genérico nem texto de resposta inventado.
   (`test_devmode_simulated_states_never_apply_when_devmode_off`), e a janela
   redimensiona por 1100×700 até 2560×1440 sem gerar warning
   (`test_window_resizes_across_target_resolutions_without_warnings`).
-- **Novo no v0.8** — `tests/test_bridge.py`: `BridgeVoiceTests` (push-to-talk
-  e fala pelos slots reais do Bridge — `toggleListening`/`stopSpeaking` —
-  com `FakeSTTService`/`FakeTTSService`, não só pela Application Layer
-  diretamente) e `BridgeStreamingPrepTests` (simula `response.started` →
-  múltiplos `response.delta` → confirma que `MessageListModel.update_content()`
-  atualiza a mesma linha progressivamente, sem criar mensagens novas —
-  preparação para streaming real, sem Claude conectado).
+- `tests/test_bridge.py`: `BridgeVoiceTests` (push-to-talk e fala pelos
+  slots reais do Bridge — `toggleListening`/`stopSpeaking` — com
+  `FakeSTTService`/`FakeTTSService`, incluindo o novo `sttStatus`
+  `"setup_required"`/`"no_microphone"`) e `BridgeStreamingPrepTests` (simula
+  `response.started` → múltiplos `response.delta` → confirma que
+  `MessageListModel.update_content()` atualiza a mesma linha
+  progressivamente, sem criar mensagens novas — preparação para streaming
+  real, sem Claude conectado).
+- `tests/test_qml_smoke.py` (v0.9) — cobre os dois estados do HUD:
+  `AuthScreen` visível/`hudRow` escondido antes do login, os dois trocando
+  de lugar reativamente após um registro real (`bridge._register(...)`),
+  sidebar refletindo o usuário logado, toggle de colapsar/expandir sem
+  warning, logout voltando para a tela de login, e resize (1100×700 até
+  2560×1440) tanto com a sidebar expandida quanto colapsada — sempre zero
+  warnings.
 
 ## Limitações desta versão
 
-- STT exige baixar manualmente o modelo Vosk (ver seção "Voz" acima) — sem
-  ele, o botão de microfone fica desabilitado, e a tooltip diz exatamente
-  por quê (mic ausente vs. modelo ausente são mensagens diferentes).
+- Sem verificação de e-mail nem recuperação de conta (contas são só
+  usuário/senha local nesta versão).
+- Sem sincronização de contas/chats entre computadores (tudo é local a esta
+  máquina — `data/jarvis.db`).
 - Sem wake word / escuta permanente (só push-to-talk, de propósito nesta
   etapa) e sem hotkey global (`Ctrl+Space` só funciona com a janela em foco).
 - A fala automática (`voice_output_enabled`) já funciona de ponta a ponta
@@ -510,20 +619,22 @@ do backend, não um spinner genérico nem texto de resposta inventado.
   fallback/erro amigável, nunca uma resposta inteligente de verdade.
 - Sem streaming real de texto — o Bridge já sabe reagir a um `response.delta`
   (testado com eventos fake), mas nenhum backend o emite ainda.
-- Sem MCP, sem ferramentas reais, sem Ruflo — tudo isso continua planejado,
-  não implementado.
+- Sem MCP, sem ferramentas reais, sem Ruflo, sem billing real — tudo isso
+  continua planejado, não implementado.
+- Busca de chat usa `LIKE` simples (sem FTS) — caracteres `%`/`_` na busca
+  do usuário funcionam como curinga do SQLite (comportamento do `LIKE`, não
+  uma falha de segurança: a busca continua escopada ao usuário logado).
 - Sem cantos de janela arredondados (decisão deliberada — ver "Layout,
   boot, resize, fullscreen" acima), sem tela de configurações, sem temas
   alternativos, sem persistência de janela (posição/tamanho não são
   lembrados entre execuções), sem seleção de dispositivo de microfone/voz
   na UI (usa sempre o padrão do sistema — a estrutura já suporta trocar
   isso depois, ver `Settings.tts_voice`).
-- Validação visual "de verdade" (like, olhar para a tela e avaliar
-  acabamento, ou realmente falar no microfone) precisa ser feita por quem
-  está rodando — os testes automatizados cobrem comportamento e ausência de
-  erros com fakes, não hardware real nem estética. TTS foi validado
-  ponta-a-ponta neste ambiente (síntese real + interrupção real); STT não
-  (nenhum modelo foi baixado, por instrução).
+- Validação visual "de verdade" (olhar para a tela e avaliar acabamento, ou
+  realmente falar no microfone depois de instalar o modelo) precisa ser
+  feita por quem está rodando — os testes automatizados cobrem
+  comportamento e ausência de erros com fakes, não hardware real nem
+  estética.
 
 ## Próximas versões (direção, não implementado)
 
@@ -539,3 +650,7 @@ e a numeração ainda pode mudar:
   complexas, opcional, não obrigatória.
 - **Voz avançada** — wake word, seleção de dispositivo/voz na UI,
   automações disparadas por voz (sempre atrás de `PermissionService`).
+- **Contas na nuvem** — sincronização de chats/conta entre computadores,
+  verificação de e-mail, billing real do plano PRO. Nada disso existe hoje;
+  a base local-first do v0.9 não impede, mas também não implica nenhuma
+  dessas peças.

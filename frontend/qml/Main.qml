@@ -152,6 +152,7 @@ Window {
 
         AuthScreen {
             id: authScreen
+            objectName: "authScreen"
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: !bridge.authenticated
@@ -161,6 +162,7 @@ Window {
 
         RowLayout {
             id: hudRow
+            objectName: "hudRow"
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: bridge.authenticated
@@ -168,6 +170,7 @@ Window {
 
             Sidebar {
                 id: sidebar
+                objectName: "sidebar"
                 Layout.fillHeight: true
                 expanded: window.sidebarExpanded
                 conversations: window.sidebarConversations

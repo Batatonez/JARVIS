@@ -8,7 +8,7 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
-🚧 **JARVIS v0.8 — HUD Overhaul / UX 2.0.** Mesma arquitetura e mesmas capabilities do v0.7 (Core/Application Layer, chat, voz push-to-talk, permissões) — esta versão é só refinamento profundo do HUD: design system consolidado em `Theme.qml`, núcleo de IA v3 (mais camadas, mais profundidade, transições orgânicas entre estados), layout que escala em monitores grandes, boot sequence mais elaborado (~1,3s), e acabamento visual em praticamente todo componente (chat, input, status, title bar, overlay de permissão). Nenhuma capability nova: Claude continua sem API key/sem chamada real, Ruflo/MCP/tools continuam fora, voz continua Vosk (STT, requer modelo baixado manualmente) + SAPI5 (TTS, já funciona). Ver [`frontend/README.md`](frontend/README.md) para o design system e o estado visual por estado.
+🚧 **JARVIS v0.9 — Accounts, Persistent Chats & Voice Input Fix.** Contas locais (usuário/senha, hash `scrypt`, sessão persistida entre execuções), sidebar retrátil com chats persistidos em SQLite (busca, agrupamento por data, renomear/excluir), memória isolada por conta (com migração controlada da memória legacy pré-contas), fundação FREE/PRO sem cobrança real, e a correção de verdade do microfone: o botão de voz agora distingue corretamente "modelo de reconhecimento ainda não instalado" de "sem microfone" de "erro real", com um fluxo de instalação explícito do modelo Vosk (download só sob consentimento, nunca automático) e captura adaptada ao sample rate real do dispositivo (não mais 16 kHz fixo). HUD v0.8 preservado (mesmo design system, mesmo núcleo de IA). Ainda sem Claude real, Ruflo, MCP/tools ou billing — ver [`docs/architecture.md`](docs/architecture.md) para o detalhamento completo e [`frontend/README.md`](frontend/README.md) para contas/sidebar/voz no HUD.
 
 ## Como executar
 
@@ -43,17 +43,21 @@ $env:ANTHROPIC_API_KEY = "sua-chave-aqui"
 python main.py        # ou: python -m frontend
 ```
 
-Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit` (alias `/quit`). No HUD, os mesmos conceitos existem como controles visuais (ver [`frontend/README.md`](frontend/README.md)).
+Comandos disponíveis no terminal: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit` (alias `/quit`). O terminal continua sem contas (fala direto com `JarvisApplication`, memória global em `memory/`) — contas, sidebar e chats persistidos são só do HUD nesta versão. No HUD, os mesmos conceitos existem como controles visuais (ver [`frontend/README.md`](frontend/README.md)).
 
-**Voz (opcional, só no HUD):** `requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`, `pyttsx3` — nenhuma exige GPU). A síntese de fala (TTS) funciona assim que essas dependências estiverem instaladas, usando vozes já existentes no Windows. O reconhecimento de fala (STT) exige, além disso, baixar manualmente um modelo Vosk (~50 MB, nunca feito automaticamente pelo JARVIS) — passo a passo em [`frontend/README.md`](frontend/README.md#voz-v07--push-to-talk). Sem o modelo, o botão de microfone do HUD fica desabilitado e o resto do JARVIS funciona normalmente por texto.
+**Contas (só no HUD):** ao abrir o HUD pela primeira vez, é preciso criar uma conta local (usuário/senha — nunca e-mail, nunca dado desnecessário) ou entrar em uma já existente. A sessão fica salva localmente (cifrada via Windows DPAPI quando disponível) para continuar logado nas próximas execuções, até um logout explícito. Cada conta tem seus próprios chats e sua própria memória — ver [`docs/architecture.md`](docs/architecture.md), seção Contas.
+
+**Voz (opcional, só no HUD):** `requirements.txt` já inclui as dependências de voz (`vosk`, `sounddevice`, `pyttsx3` — nenhuma exige GPU). A síntese de fala (TTS) funciona assim que essas dependências estiverem instaladas, usando vozes já existentes no Windows. O reconhecimento de fala (STT) exige, além disso, um modelo Vosk instalado — agora **instalável de dentro do próprio HUD**: clique no microfone sem o modelo instalado abre um passo explícito "Baixar modelo de voz (~45 MB)", mostrando origem/licença/tamanho antes de qualquer download (nunca automático). Sem o modelo, o botão de microfone mostra claramente "configuração necessária" (nunca some nem finge estar pronto) e o resto do JARVIS funciona normalmente por texto — ver [`frontend/README.md`](frontend/README.md#voz-v09--setup-do-modelo-e-push-to-talk-corrigido).
 
 ## Arquitetura geral
 
 ```
-JARVIS HUD (PySide6/QML) ou Terminal
-  ↓
+JARVIS HUD (PySide6/QML)                          Terminal
+  ↓                                                  ↓
+AccountManager   (implementado — v0.9 — app/account_manager.py — só no HUD: contas, sessão, chats, memória por usuário)
+  ↓ (dono do ciclo de vida por sessão logada)
 JarvisApplication          (implementado — app/application.py — a API estável para qualquer frontend)
-  ├→ VoiceService           (implementado — v0.7 — services/voice_service.py — STT/TTS, só usado pelo HUD)
+  ├→ VoiceService           (implementado — v0.7/v0.9 — services/voice_service.py — STT/TTS, só usado pelo HUD)
   ↓
 JarvisCore / Orchestrator   (implementado — app/core.py, app/orchestrator.py)
   ↓
@@ -63,6 +67,8 @@ Ferramentas / Skills / MCP / Subagentes
   ↓
 Sistema operacional / APIs / serviços
 ```
+
+O terminal continua falando direto com `JarvisApplication` (sem `AccountManager`, sem contas) — só o HUD ganhou a camada de contas nesta versão.
 
 Detalhes completos, incluindo o que está implementado vs. preparado vs. planejado (e a direção futura com Ruflo para orquestração multiagente), em [`docs/architecture.md`](docs/architecture.md). API pública da Application Layer em [`docs/application-api.md`](docs/application-api.md); arquitetura do HUD em [`frontend/README.md`](frontend/README.md).
 
@@ -74,8 +80,9 @@ Detalhes completos, incluindo o que está implementado vs. preparado vs. planeja
 | [`memory/`](memory/) | Memória persistente sobre o usuário (perfil, preferências) |
 | [`projects/`](projects/) | Contexto persistente de projetos acompanhados pelo JARVIS |
 | [`daily/`](daily/) | Registros diários (`YYYY-MM-DD.md`) |
-| [`app/`](app/) | Aplicativo/núcleo principal — `JarvisApplication` (fronteira estável), terminal, `JarvisCore`, `Orchestrator`, comandos, estado (async) |
-| [`services/`](services/) | Serviços internos — memória (leitura), IA (`ClaudeAgentProvider`/`UnavailableAIService`), identidade de runtime, event bus |
+| [`app/`](app/) | Aplicativo/núcleo principal — `AccountManager` (contas/sessão, v0.9, só HUD), `JarvisApplication` (fronteira estável), terminal, `JarvisCore`, `Orchestrator`, comandos, estado (async) |
+| [`services/`](services/) | Serviços internos — memória (leitura), IA (`ClaudeAgentProvider`/`UnavailableAIService`), contas/sessão/conversas (SQLite), modelo de voz (`VoiceModelManager`), identidade de runtime, event bus |
+| [`data/`](data/) | Dados locais pessoais (v0.9): banco de contas/chats, sessão local, modelo de voz baixado — **nunca no Git** (ver `.gitignore`) |
 | [`frontend/`](frontend/) | HUD gráfico (PySide6/QML) — `python -m frontend` |
 | [`integrations/`](integrations/) | Integrações externas (MCP, APIs, serviços de terceiros) — futuro |
 | [`tools/`](tools/) | Ferramentas que o JARVIS poderá usar, classificadas por nível de risco — futuro |
@@ -87,37 +94,36 @@ Pastas ainda não implementadas contêm um `README.md` explicando sua finalidade
 
 ## Funcionalidades
 
-**Implementado (JARVIS v0.8 — HUD Overhaul/UX 2.0, sobre a base do v0.5/v0.6/v0.7):**
-- HUD gráfico v3 (PySide6/QML, `python -m frontend`): núcleo de IA com mais profundidade (glow em camadas, anel completo + arcos + segmentado + nós orbitais, ondas de saída em SPEAKING), design system consolidado em `Theme.qml`, layout que cresce em monitores grandes sem estourar em janelas pequenas, boot em etapas (~1,3s), borda de janela sutil, overlay técnico opcional em dev mode
-- Voz no HUD: push-to-talk (clique liga/desliga, ou `Ctrl+Space`), reconhecimento de fala offline (Vosk), síntese de fala offline (SAPI5/Windows), estados `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, indicador de nível de voz real, botão de microfone (com motivo específico quando indisponível) e controle "OUTPUT" — ver [`frontend/README.md`](frontend/README.md)
-- `VoiceService` (`services/voice_service.py`), sob `JarvisApplication`: coordena STT/TTS, cancelamento, eventos `voice.*`
-- Chat v2, status v2, overlay de permissão v3 (ênfase visual extra para DANGEROUS), cancelamento, nova conversa
-- `JarvisApplication`: API estável para qualquer frontend — `send_message`, `cancel_current_request`, `new_conversation`, `start_listening`/`stop_listening_and_transcribe`/`speak`, `get_status`, `get_messages`, `subscribe`/`events` (ver [`docs/application-api.md`](docs/application-api.md))
-- Histórico de conversa em runtime, separado da memória persistente
-- Stream de eventos em processo (sem WebSocket/servidor) — consumido tanto pelo HUD quanto preparado para futuros frontends
-- Política de concorrência clara (uma requisição por vez, incluindo voz) e cancelamento real via `asyncio.Task`
-- Erros estruturados para a interface (`AI_UNAVAILABLE`, `JARVIS_BUSY`, `INTERNAL_ERROR`, `MICROPHONE_UNAVAILABLE`, `STT_NOT_READY`, `TTS_UNAVAILABLE`, `VOICE_CANCELLED`) — nunca texto para analisar
-- Fundação de permissões em memória (`app/permissions.py`), não conectada a ferramentas reais ainda — voz nunca contorna essa fundação (ver `docs/architecture.md`)
-- Núcleo executável por terminal, assíncrono (`python main.py`), consumindo a mesma Application Layer que o HUD (sem voz — recurso do HUD)
+**Implementado (JARVIS v0.9 — Accounts, Persistent Chats & Voice Input Fix, sobre a base do v0.5–v0.8):**
+- Contas locais no HUD: criar conta (usuário/senha, hash `scrypt`, salt via `secrets`, comparação em tempo constante), entrar, sair; sessão persistida entre execuções (token opaco, nunca a senha, cifrado via Windows DPAPI quando disponível); isolamento garantido no nível de query — um usuário nunca lê/escreve dado de outro (ver `services/user_repository.py`, `services/session_repository.py`, `services/session_store.py`)
+- Sidebar retrátil (expandida/colapsada, animada) com "+ Novo chat", busca local, conversas agrupadas por data (Hoje/Ontem/Últimos 7 dias/Mais antigos), conta/plano no rodapé — substitui o antigo botão solto "NOVA CONVERSA"
+- Chats persistidos em SQLite (`services/local_database.py`, `services/conversation_repository.py`, stdlib `sqlite3`, sem ORM): criar, listar, ordenar, buscar, renomear, excluir, carregar conversa antiga — sempre escopado ao usuário logado; título derivado das primeiras palavras da primeira mensagem (sem IA)
+- Memória isolada por conta (`data/users/<id>/memory/`), com migração controlada da memória legacy pré-contas (`memory/profile.md`/`preferences.md`) para a primeira conta criada no ambiente — original nunca apagado/movido, nunca sobrescreve memória que a conta já tenha
+- Fundação FREE/PRO (`app/entitlements.py`): um único ponto (`entitlements_for(plan)`) resolve capacidades por plano — sem cobrança, sem checkout, sem Stripe/Pix real
+- **Microfone corrigido de verdade**: `services/stt_service.py` agora distingue `READY`/`SETUP_REQUIRED`/`NO_MICROPHONE`/`UNAVAILABLE` (antes caía tudo em "indisponível" sem dizer por quê); `VoiceModelManager` (`services/vosk_model_manager.py`) instala o modelo Vosk só sob consentimento explícito no HUD (nunca automático), com download HTTPS, progresso real, cancelamento, e proteção contra Zip Slip; `services/vosk_stt_provider.py` captura no sample rate nativo do dispositivo (detectado, nunca mais 16 kHz fixo) e reamostra em software — ver seção "Diagnóstico" em [`docs/architecture.md`](docs/architecture.md)
+- MicButton com 5 estados visuais (`SETUP_REQUIRED`/`READY`/`LISTENING`/`PROCESSING`/`ERROR`), cada um com tooltip própria e comportamento de clique correto (nunca dispara uma segunda captura durante `PROCESSING`)
+- HUD gráfico v3 preservado integralmente (PySide6/QML, `python -m frontend`): núcleo de IA, design system em `Theme.qml`, layout responsivo, boot em etapas, overlay técnico em dev mode
+- Voz no HUD: push-to-talk (clique liga/desliga, ou `Ctrl+Space`), síntese de fala offline (SAPI5/Windows), estados `LISTENING`/`PROCESSING_SPEECH`/`SPEAKING`, indicador de nível de voz real — ver [`frontend/README.md`](frontend/README.md)
+- `VoiceService`/`JarvisApplication`/`Orchestrator`/permissões/cancelamento/stream de eventos: tudo do v0.5–v0.8 preservado sem regressão (ver [`docs/application-api.md`](docs/application-api.md))
+- Núcleo executável por terminal, assíncrono (`python main.py`), sem contas (fala direto com `JarvisApplication`, memória global)
 - Comandos: `/help`, `/status`, `/memory`, `/new` (alias `/reset`), `/clear`, `/exit`
-- Leitura somente-leitura da memória (`profile.md`, `preferences.md`), entregue como contexto controlado à IA
-- Arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`, sessão contínua, ferramentas desabilitadas), condicionada a `ANTHROPIC_API_KEY`; sem a chave, fallback automático e seguro para `UnavailableAIService`
+- Arquitetura do **Claude Agent SDK** pronta (`ClaudeAgentProvider`), condicionada a `ANTHROPIC_API_KEY`; sem a chave, fallback automático e seguro para `UnavailableAIService`
 
 **Preparado, mas não ativado:**
 - Conexão real com Claude e sessão de conversa contínua (arquitetura pronta e testada com fakes; não validada com IA real nesta etapa — sem API key neste ambiente)
 - Fluxo completo voz → Claude → voz (fala transcrita já cai no chat como texto revisável; a resposta inteligente de verdade depende de uma versão futura ativar o Claude)
-- Streaming real token-a-token: contrato de eventos já existe, e o Bridge/`MessageListModel` já sabem reagir a um `response.delta` (testado com eventos fake) — falta só o backend passar a emiti-lo de verdade
-- Fluxo de permissões de ferramentas (overlay pronto e visualmente refinado; falta conectar a ferramentas reais)
+- Streaming real token-a-token: contrato de eventos já existe (`response.delta`), testado com eventos fake — falta só o backend emitir de verdade
+- Sincronização de contas/chats na nuvem (arquitetura local-first não impede isso no futuro; nada disso existe agora)
+- Cobrança real do plano PRO (estrutura de entitlements pronta; sem Stripe/Pix/checkout)
 
 **Planejado:**
 - API Claude real
+- Verificação de e-mail / recuperação de conta
+- Backend/cloud e billing real
 - Wake word / escuta permanente (por enquanto é só push-to-talk, de propósito)
-- Ferramentas para interagir com o computador (READ / ACTION / DANGEROUS)
-- MCPs, Skills e Hooks do Claude Code
-- Subagentes especializados
+- Ferramentas para interagir com o computador (READ / ACTION / DANGEROUS), MCPs, Skills e Hooks do Claude Code, subagentes especializados
 - **Ruflo** ([github.com/ruvnet/ruflo](https://github.com/ruvnet/ruflo)) como camada opcional de orquestração multiagente para tarefas complexas — não instalado, não obrigatório para o JARVIS funcionar
 - Memória avançada (embeddings, busca semântica)
-- Persistência de conversas entre execuções
 - Tela de configurações, temas alternativos, empacotamento como aplicativo Windows instalável
 - Integração com outras APIs e serviços externos
 

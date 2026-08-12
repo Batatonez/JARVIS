@@ -26,7 +26,6 @@ from PySide6.QtGui import QGuiApplication
 
 from app.models import AppEvent, PermissionStatus, RiskLevel
 from frontend.message_model import MessageRoles
-from services.user_repository import InvalidCredentialsError, UsernameAlreadyExistsError
 from services.voice_service import VoiceService
 from tests.fakes import FakeAIService, FakeSTTService, FakeTTSService
 from tests.helpers import build_isolated_bridge, build_isolated_core, build_isolated_voice_service
@@ -136,6 +135,9 @@ class BridgeAccountTests(_BridgeTestCase):
             await bridge._shutdown()
 
     async def test_register_duplicate_username_emits_auth_error(self) -> None:
+        # `bridge._register()` é a corrotina por trás do slot público — ela
+        # nunca deixa a exceção escapar (isso quebraria o event loop do Qt);
+        # em vez disso, traduz para `authErrorRaised` (ver frontend/bridge.py).
         bridge = self._bridge()
         await bridge.initialize()
         try:
@@ -144,8 +146,10 @@ class BridgeAccountTests(_BridgeTestCase):
             received: list[str] = []
             bridge.authErrorRaised.connect(lambda message: received.append(message))
 
-            with self.assertRaises(UsernameAlreadyExistsError):
-                await bridge._register("alice", "Outra Alice", "outra-senha-456")
+            await bridge._register("alice", "Outra Alice", "outra-senha-456")
+
+            self.assertEqual(len(received), 1)
+            self.assertEqual(bridge.currentUser["displayName"], "Alice")  # sessão original preservada
         finally:
             await bridge._shutdown()
 
@@ -154,8 +158,7 @@ class BridgeAccountTests(_BridgeTestCase):
         await bridge.initialize()
         try:
             await bridge._register("alice", "Alice", "senha-forte-123")
-            await bridge._leave_session()
-            await bridge._account.logout()
+            await bridge._logout()
             self.assertFalse(bridge.authenticated)
 
             received: list[str] = []

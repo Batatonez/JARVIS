@@ -662,6 +662,13 @@ class JarvisBridge(QObject):
         # sessão atual mas preserva o token local — a próxima execução
         # continua logada, a menos que o usuário tenha feito logout.
         await self._account.shutdown()
+        # `self._app` já é `None` neste ponto (AccountManager derrubou a
+        # sessão) — `_refresh_status()` não tem nada para ler, então o
+        # estado visível da sessão precisa ser resetado manualmente aqui
+        # (mesmo raciocínio de `_logout()`).
+        self._set_property("_running", False, self.runningChanged)
+        self._set_property("_busy", False, self.busyChanged)
+        self._set_property("_ai_session_active", False, self.aiSessionActiveChanged)
         self._can_close = True
         self.canCloseChanged.emit()
         qt_app = QCoreApplication.instance()

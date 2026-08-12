@@ -4,6 +4,12 @@ Este é o contrato que qualquer frontend (terminal hoje; HUD, voz, etc. no
 futuro) deve usar para falar com o JARVIS — nunca `JarvisCore`, `Orchestrator`,
 `MemoryService` ou `services/claude_agent_provider.py` diretamente.
 
+**v0.9 — só o terminal usa isto diretamente.** O HUD passou a falar com
+`AccountManager` (`app/account_manager.py`), que é quem constrói/destrói uma
+`JarvisApplication` por sessão logada (contas, chats persistidos, memória por
+usuário — ver `docs/architecture.md`, seção "Contas locais"). A API abaixo
+não mudou; o que mudou é quem a chama no caso do HUD.
+
 ```python
 from app.core import JarvisCore
 from app.application import JarvisApplication
@@ -72,6 +78,19 @@ messages = app.get_messages()
 
 Isto é diferente de `memory/` (memória persistente sobre o usuário — ver
 `CLAUDE.md`): o histórico de conversa desaparece ao encerrar o JARVIS.
+
+## Como carregar uma conversa salva (v0.9)
+
+```python
+await app.load_conversation_history(messages)  # list[Message], vindo de um repositório
+```
+
+Repovoa o `Conversation` em RAM para exibição (cancela qualquer requisição
+pendente antes) e emite `conversation.loaded`. **Importante**: isto é só o
+histórico visual — não reconecta uma sessão real do Claude Agent SDK com
+aquele contexto (não existe Claude real ainda para reconectar). Quem chama
+isto hoje é `AccountManager.open_conversation()`, ao abrir um chat salvo pela
+sidebar do HUD; nunca confundir com "a IA lembra da conversa antiga".
 
 ## Como cancelar a resposta atual
 
