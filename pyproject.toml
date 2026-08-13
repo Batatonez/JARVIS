@@ -1,0 +1,43 @@
+# Empacotamento mínimo — existe para um único propósito: registrar o comando
+# `jarvis`, que abre o mesmo HUD de `python -m frontend`.
+#
+# DEPENDÊNCIAS FICAM EM `requirements.txt`, de propósito. Este arquivo NÃO
+# declara `[project.dependencies]` por dois motivos concretos:
+#
+# 1. O PySide6 instalado nesta máquina é o `PySide6-Essentials` (6.11.1).
+#    Declarar `PySide6` aqui faria `pip install -e .` baixar o meta-pacote
+#    completo (Essentials + Addons), centenas de MB que o projeto não usa.
+# 2. `pip install -e .` passa a ser uma operação barata e previsível: só
+#    registra o console script e o hook de import editável, sem mexer em
+#    nada que já esteja instalado.
+#
+# Ou seja: `pip install -r requirements.txt` continua sendo o passo que
+# instala as dependências; `pip install -e .` só adiciona o comando.
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-assistant"
+version = "1.1.0"
+description = "JARVIS — assistente pessoal modular para Windows"
+requires-python = ">=3.10"
+
+[project.scripts]
+# `jarvis` -> frontend/cli.py::main -> frontend/launcher.py::run (o MESMO
+# caminho de `python -m frontend`, que continua funcionando inalterado).
+jarvis = "frontend.cli:main"
+
+[tool.setuptools]
+# Lista explícita: o layout é flat e a raiz tem várias pastas que NÃO são
+# pacotes Python (docs/, memory/, data/, daily/, projects/, logs/...). Sem
+# isto, a auto-descoberta do setuptools falharia ou empacotaria coisa
+# demais. `tests` fica de fora de propósito — não é para ser instalado.
+packages = ["app", "config", "frontend", "services"]
+
+[tool.setuptools.package-data]
+# Só relevante para uma instalação NÃO editável (o QML é resolvido por
+# caminho relativo ao módulo). Em modo editável, os arquivos são lidos
+# direto da árvore do projeto.
+frontend = ["qml/*.qml", "qml/**/*.qml", "qml/**/qmldir"]

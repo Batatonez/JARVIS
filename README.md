@@ -40,6 +40,47 @@ python main.py
 python -m frontend
 ```
 
+### Starting JARVIS
+
+Depois de uma instalação editável (abaixo), o HUD abre com um comando curto:
+
+```powershell
+jarvis
+```
+
+Aliases equivalentes — todos abrem exatamente a mesma GUI:
+
+```powershell
+jarvis wake up
+jarvis wake
+jarvis start
+```
+
+`jarvis --help` mostra o uso; um argumento desconhecido mostra o mesmo texto e sai com código 2.
+
+**Instalação editável** (registra o comando; roda uma vez):
+
+```powershell
+pip install -e .
+```
+
+O `pyproject.toml` declara **apenas** o entrypoint — as dependências continuam em `requirements.txt` (`pip install -r requirements.txt`), então `pip install -e .` é rápido e não reinstala nada. Editável significa que o comando sempre executa o código atual do repositório, sem reinstalar a cada alteração.
+
+`jarvis` é um atalho para o mesmo entrypoint de `python -m frontend` (`frontend/launcher.py::run`) — mesmo `.env`, mesmo auto-login, mesmo ProviderRouter, mesma voz, mesmo encerramento. **`python -m frontend` continua funcionando normalmente.**
+
+**Se o comando não for encontrado (Windows):** o `pip` instala o executável em uma pasta `Scripts` que pode não estar no `PATH` — ele avisa isso na instalação, por exemplo `C:\Users\<você>\AppData\Roaming\Python\Python314\Scripts`. Três opções, em ordem de preferência:
+
+1. **Use um ambiente virtual** (recomendado): com o venv ativo, o `Scripts` dele já está no `PATH`, e `jarvis` funciona direto.
+   ```powershell
+   py -m venv .venv
+   .venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   pip install -e .
+   jarvis
+   ```
+2. **Sem venv**, chame pelo caminho completo, ou adicione aquela pasta `Scripts` ao `PATH` do usuário pelas Configurações do Windows (Variáveis de Ambiente). Este projeto **não** altera seu `PATH` automaticamente.
+3. **Sempre funciona, sem instalar nada:** `python -m frontend`.
+
 Sem nenhuma chave de IA configurada, o JARVIS (em qualquer um dos dois) abre e funciona normalmente, avisando que a IA não está configurada — nunca finge uma resposta, nunca trava.
 
 **Para conversar de verdade (recomendado — OpenRouter, rota gratuita):**
