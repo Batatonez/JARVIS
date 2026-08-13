@@ -58,6 +58,16 @@ jarvis start
 
 `jarvis --help` mostra o uso; um argumento desconhecido mostra o mesmo texto e sai com código 2.
 
+**Zerar todas as contas locais:**
+
+```powershell
+jarvis delete all users
+```
+
+Pede confirmação — só prossegue se você digitar exatamente `DELETE`; qualquer outra resposta cancela sem apagar nada. Antes de apagar, salva um backup do banco em `data/backups/jarvis-before-delete-users-<data>.db` (se o backup falhar, a operação aborta e nada é removido).
+
+Remove contas, sessões, conversas, mensagens, memórias e tokens de verificação, além das pastas de memória por usuário em `data/users/`. **Preserva** `.env`, chaves de API, configuração de SMTP, modelos de voz e o resto do projeto. O banco não é apagado nem recriado — continua válido e migrado, e o app abre como instalação nova.
+
 **Instalação editável** (registra o comando; roda uma vez):
 
 ```powershell
