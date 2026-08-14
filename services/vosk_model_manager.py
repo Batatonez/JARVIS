@@ -29,6 +29,11 @@ MODEL_SOURCE = "alphacephei.com (mantenedores oficiais do Vosk)"
 
 _DOWNLOAD_TIMEOUT_S = 30
 _CHUNK_SIZE = 65536
+# Piso para considerar um modelo extraído por inteiro. O modelo pequeno de
+# pt-BR tem dezenas de MB descompactado; 5 MB descarta com folga uma pasta
+# só com README ou uma extração interrompida, sem depender do tamanho exato
+# de uma versão específica do modelo.
+_MINIMUM_VALID_MODEL_BYTES = 5 * 1024 * 1024
 
 
 class ModelDownloadError(Exception):
@@ -66,6 +71,40 @@ class VoiceModelManager:
         # `VoskSTTProvider`/`vosk.Model` falha alto e claro se o conteúdo
         # estiver corrompido/incompleto (não escondemos esse erro aqui).
         return self._model_path.is_dir() and any(self._model_path.iterdir())
+
+    @property
+    def is_complete(self) -> bool:
+        """Checagem mais rigorosa que `is_installed`, usada pelo setup para
+        decidir se precisa baixar (v1.2).
+
+        `is_installed` responde "existe alguma coisa aí?", o que é o certo
+        para o HUD decidir entre SETUP_REQUIRED e READY. Mas uma extração
+        interrompida deixa a pasta existindo com uma fração dos arquivos —
+        e aí o setup não pode considerar o modelo pronto.
+
+        Critério deliberadamente frouxo (pasta `conf/` + tamanho mínimo) em
+        vez de uma lista exata de arquivos: uma checagem rígida demais
+        rejeitaria um layout de modelo ligeiramente diferente e mandaria
+        baixar de novo para sempre. `conf/` existe em todo modelo Vosk, e o
+        piso de tamanho descarta pasta só com README ou extração parcial."""
+        if not self._model_path.is_dir():
+            return False
+        if not (self._model_path / "conf").is_dir():
+            return False
+        return self.installed_size_bytes() >= _MINIMUM_VALID_MODEL_BYTES
+
+    def installed_size_bytes(self) -> int:
+        """Soma dos arquivos do modelo instalado (0 se não existir)."""
+        if not self._model_path.is_dir():
+            return 0
+        total = 0
+        for path in self._model_path.rglob("*"):
+            if path.is_file():
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    continue
+        return total
 
     @staticmethod
     def info() -> ModelInfo:

@@ -46,6 +46,35 @@ python main.py
 python -m frontend
 ```
 
+### Setup em um comando
+
+```powershell
+python setup.py
+```
+
+Instala as dependências (`requirements.txt`), instala o JARVIS em modo editável (registrando o comando `jarvis`), baixa o modelo de reconhecimento de fala se ainda não existir, e verifica o microfone. Ao final:
+
+```
+JARVIS SETUP COMPLETE
+
+Launcher .......... OK
+Dependencies ...... OK
+Speech-to-Text .... READY
+Microphone ........ DETECTED
+
+Open a new terminal and run:
+
+    jarvis
+```
+
+**Idempotente**: rodar de novo não rebaixa o modelo se ele já estiver íntegro. A validação é mais rigorosa que "a pasta existe" — uma extração interrompida é detectada e refeita.
+
+**Sem microfone o setup não falha**: apenas reporta `NOT DETECTED`. O JARVIS funciona normalmente por texto.
+
+O download usa a fonte oficial já definida pelo projeto (`services/vosk_model_manager.py`: alphacephei.com, mantenedores do Vosk — HTTPS obrigatório, arquivo temporário, progresso real, proteção contra Zip Slip, limpeza em caso de falha). O modelo vai para `data/models/vosk/`, fora do Git.
+
+> `setup.py` tem dois modos, de propósito: executado direto (`python setup.py`) faz a preparação acima; executado pelo pip com um comando de build (`pip install -e .`) delega ao setuptools. Sem essa distinção, um `pip install` dispararia o download de 45 MB.
+
 ### Starting JARVIS
 
 Depois de uma instalação editável (abaixo), o HUD abre com um comando curto:
