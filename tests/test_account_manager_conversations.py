@@ -189,10 +189,22 @@ class AccountManagerConversationTests(unittest.IsolatedAsyncioTestCase):
             await account.app.send_message("qual é a previsão do tempo amanhã")
             await _settle()
 
-            results = account.search_conversations("servidor")
+            # Busca por CONTEÚDO da mensagem. Antes da v1.3.2 o título era a
+            # própria primeira mensagem, então este teste também passava
+            # olhando o título — o que escondia a diferença entre os dois
+            # critérios de busca. Agora a conversa nasce com o título padrão,
+            # e o match aqui vem de fato do conteúdo.
+            by_content = account.search_conversations("servidor")
+            self.assertEqual(len(by_content), 1)
+            first_id = by_content[0].id
 
-            self.assertEqual(len(results), 1)
-            self.assertIn("servidor", results[0].title.lower())
+            # Busca por TÍTULO, depois de um rename manual.
+            account.rename_conversation(first_id, "Servidor de Jogos")
+            by_title = account.search_conversations("Servidor de Jogos")
+            self.assertEqual([c.id for c in by_title], [first_id])
+
+            # Termo que não existe em lugar nenhum não devolve nada.
+            self.assertEqual(account.search_conversations("kubernetes"), [])
         finally:
             await account.shutdown()
 

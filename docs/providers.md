@@ -71,9 +71,47 @@ result = await router.execute(RouteRequest(prompt="oi", free_only=True))
 - `execute(request) -> AIExecutionResult` — chama `select()`, delega ao provider, e (quando `free_only=True`) verifica a resposta antes de devolver como sucesso.
 - `health() -> dict[ProviderId, ProviderStatus]` — status de cada provider conhecido, incluindo os `NOT_IMPLEMENTED`.
 
-## `openrouter/free` e o modo `free_only`
+## `openrouter/free` não é mais a rota padrão (v1.3.2)
 
-Suporte explícito ao slug `openrouter/free` (`services/providers/openrouter_provider.py::FREE_MODEL`). Quando `RouteRequest.free_only=True`:
+**Bug real, causa raiz provada.** Perguntando "Opa! E aí, tudo bem?", a resposta visível do JARVIS às vezes era literalmente:
+
+```text
+User Safety: safe
+```
+
+`openrouter/free` é um **agregador cego**: sorteia qualquer modelo do pool gratuito a cada chamada. Nesse pool está `nvidia/nemotron-3.5-content-safety:free`, que **não é um modelo de conversa** — é um classificador de conteúdo. A resposta RAW capturada (em `tests/fixtures_openrouter.py`) é:
+
+```json
+{"role": "assistant", "content": "User Safety: safe", "refusal": null, "reasoning": "..."}
+```
+
+Ou seja: **o parser estava certo, a seleção estava errada.** O classificador respondeu exatamente o que ele existe para responder; nós é que perguntamos a ele.
+
+A correção é estrutural, em duas frentes:
+
+1. `free_models()` passou a devolver `FREE_CHAT_MODELS` — uma lista **curada** de modelos gratuitos de chat. A metadata da API não distingue um classificador de um modelo de conversa (ambos declaram `text -> text`), então não há filtro automático possível: a curadoria é manual e precisa ser revisada quando o pool mudar.
+2. `AGGREGATE_FREE_MODEL` (`openrouter/free`) continua na lista, **no fim** — é uma rota gratuita legítima para quem a pedir por `preferred_model`, mas nunca é a escolha automática.
+
+Nenhum filtro de texto foi usado. Um filtro do tipo `if "User Safety" in content` quebraria uma resposta legítima que explique o formato de um classificador — há teste para exatamente isso (`NotABlacklistTests`).
+
+## Resposta separada por natureza (v1.3.2)
+
+`ProviderMessage` (`services/providers/types.py`) separa o que a API entrega no mesmo objeto `message`:
+
+| campo | destino |
+|---|---|
+| `visible_content` | pode virar mensagem de `assistant` |
+| `reasoning` | raciocínio interno — **nunca** UI, nunca TTS, nunca persistido |
+| `refusal` | recusa estruturada — diagnóstico |
+| `usage` / `cost` / `served_model` | metadata — nunca entra no texto |
+
+Isso importa porque `content` pode vir `null` **com HTTP 200 e usage contabilizado**: um modelo de raciocínio gasta todo o orçamento pensando e não escreve nada. Capturado de verdade em `poolside/laguna-xs-2.1:free`, com `finish_reason: "length"`.
+
+Nesse caso o serviço levanta `EmptyProviderResponseError` (código `EMPTY_PROVIDER_RESPONSE`) e faz **UM** retry com o próximo modelo gratuito da lista — repetir com o mesmo modelo tenderia ao mesmo resultado. `free_only` continua valendo em toda tentativa; nada vazio é persistido; a mensagem do usuário não é duplicada.
+
+## O modo `free_only`
+
+Quando `RouteRequest.free_only=True`:
 
 1. **Antes da chamada** (`select()`): o modelo escolhido só pode ser um dos declarados em `provider.free_models()` — nunca um modelo pago é sequer solicitado.
 2. **Depois da chamada** (`execute()`): a resposta é conferida contra o que o provider *relatou* — `served_model` (o modelo que a OpenRouter de fato usou, do campo `data["model"]` da resposta) e `cost` (normalizado de `data["usage"]["cost"]`, quando presente). Se `cost.is_free` vier `False`, ou se nem `cost` nem `served_model` confirmarem uma rota gratuita, `execute()` levanta `NoFreeModelAvailableError` (código `NO_FREE_MODEL_AVAILABLE`) — mesmo que a chamada já tenha sido feita.

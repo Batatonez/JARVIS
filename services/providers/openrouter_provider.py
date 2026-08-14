@@ -34,6 +34,7 @@ from services.providers.types import (
     ModelCapability,
     ModelId,
     ProviderId,
+    ProviderMessage,
     ProviderStatus,
     RouteRequest,
     UsageInfo,
@@ -41,11 +42,47 @@ from services.providers.types import (
 
 logger = logging.getLogger(__name__)
 
-# Slug oficial da rota agregada gratuita da OpenRouter — ver
-# https://openrouter.ai/docs (modelos com sufixo ":free" ou o alias
-# "openrouter/free"/"openrouter/auto:free" também contam como grátis; esta
-# constante é só o caso pedido explicitamente pelo projeto nesta etapa).
-FREE_MODEL: ModelId = "openrouter/free"
+# Rota agregada gratuita da OpenRouter. **NÃO é mais a rota padrão** (v1.3.2).
+#
+# CAUSA RAIZ DO BUG "User Safety: safe": `openrouter/free` é um agregador CEGO
+# — ele sorteia qualquer modelo do pool gratuito a cada chamada. Nesse pool
+# está `nvidia/nemotron-3.5-content-safety:free`, que **não é um modelo de
+# chat**: é um CLASSIFICADOR de conteúdo. Perguntando "Opa! E aí, tudo bem?"
+# a ele, a resposta (capturada de verdade, em `tests/fixtures_openrouter.py`)
+# é literalmente:
+#
+#     {"role": "assistant", "content": "User Safety: safe", ...}
+#
+# O parser estava certo; quem estava errado era a SELEÇÃO. Nenhum filtro de
+# texto resolveria isso sem quebrar uma resposta legítima que por acaso
+# contenha as mesmas palavras.
+#
+# Continua disponível via `RouteRequest.preferred_model` para quem quiser
+# conscientemente a rota agregada.
+AGGREGATE_FREE_MODEL: ModelId = "openrouter/free"
+
+# Modelos gratuitos de CHAT, em ordem de preferência. Curado à mão porque a
+# metadata da API não distingue um classificador de um modelo de conversa
+# (ambos declaram `text -> text`), então não há como filtrar automaticamente.
+#
+# Critérios de exclusão aplicados ao pool gratuito atual:
+#   - `nvidia/nemotron-3.5-content-safety` -> classificador, não conversa
+#   - `poolside/laguna-*`, `cohere/north-mini-code` -> modelos de CÓDIGO
+#   - `*-omni-*-reasoning` -> gastou o orçamento inteiro em raciocínio e
+#     devolveu `content: null` na captura real
+#
+# Esta lista envelhece: quando um slug sair do ar, o próximo da tupla assume
+# (ver o retry de `ProviderRouterAIService`). Revisar ao atualizar a versão.
+FREE_CHAT_MODELS: tuple[ModelId, ...] = (
+    "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3.5-lightning:free",
+)
+
+# Compatibilidade: `FREE_MODEL` era o slug único da v1.0-v1.3.
+FREE_MODEL: ModelId = FREE_CHAT_MODELS[0]
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api"
 _DEFAULT_TIMEOUT_S = 60.0
@@ -100,7 +137,13 @@ class OpenRouterProvider(AIProvider):
         return bool(self._api_key)
 
     def free_models(self) -> tuple[ModelId, ...]:
-        return (FREE_MODEL,)
+        """Modelos gratuitos de CHAT, na ordem de preferência.
+
+        `AGGREGATE_FREE_MODEL` entra no fim: continua sendo uma rota gratuita
+        válida (o `free_only` do router precisa reconhecê-la como tal quando
+        alguém a pede explicitamente), mas nunca é a escolha automática —
+        ver o comentário de `AGGREGATE_FREE_MODEL`."""
+        return FREE_CHAT_MODELS + (AGGREGATE_FREE_MODEL,)
 
     def supported_capabilities(self) -> frozenset[ModelCapability]:
         return frozenset({ModelCapability.CHAT, ModelCapability.STREAMING})
@@ -171,10 +214,7 @@ class OpenRouterProvider(AIProvider):
         except json.JSONDecodeError as exc:
             raise ProviderUnavailableError("Resposta da OpenRouter não é JSON válido.") from exc
 
-        output = ""
-        choices = data.get("choices") or []
-        if choices:
-            output = choices[0].get("message", {}).get("content", "") or ""
+        message = parse_message(data)
 
         usage_raw = data.get("usage") or {}
         usage = UsageInfo(
@@ -189,12 +229,63 @@ class OpenRouterProvider(AIProvider):
             provider=self.id,
             requested_model=model,
             served_model=data.get("model"),
-            output=output,
+            output=message.visible_content,
+            reasoning=message.reasoning,
+            refusal=message.refusal,
             usage=usage,
             cost=cost,
             message_id=data.get("id"),
             duration_ms=duration_ms,
         )
+
+
+def parse_message(data: dict) -> ProviderMessage:
+    """Separa a mensagem do provider por natureza (v1.3.2).
+
+    A resposta compatível com OpenAI carrega, no MESMO objeto `message`,
+    coisas de naturezas diferentes — e só `content` é destinado ao usuário.
+    Captura real de `nvidia/nemotron-3-nano-omni-...:free`:
+
+        {"role": "assistant", "content": null, "reasoning": "Okay, the user
+         is greeting me in Portuguese...", "refusal": null}
+
+    Ou seja: `content` pode ser `null` mesmo com `success=True` e usage
+    contabilizado. Antes isso virava string vazia sem distinção; agora o
+    chamador consegue perguntar `has_visible_content` e tratar como resposta
+    ausente em vez de mostrar nada (ou, pior, cair em algum fallback que
+    aproveitasse o raciocínio).
+
+    `content` também pode vir como LISTA de partes (`[{"type": "text",
+    "text": "..."}]`) em alguns backends — as partes de texto são
+    concatenadas na ordem, e qualquer parte que não seja texto é ignorada.
+    """
+    choices = data.get("choices") or []
+    if not choices:
+        return ProviderMessage()
+    message = choices[0].get("message") or {}
+
+    return ProviderMessage(
+        visible_content=_coerce_text(message.get("content")),
+        reasoning=_coerce_text(message.get("reasoning")),
+        refusal=message.get("refusal") or None,
+    )
+
+
+def _coerce_text(value) -> str:
+    """`None`, string, ou lista de partes -> string. Nunca levanta."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for part in value:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts)
+    return ""
 
 
 def _normalize_cost(usage_raw: dict) -> CostInfo | None:

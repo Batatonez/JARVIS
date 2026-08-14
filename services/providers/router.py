@@ -54,6 +54,12 @@ class ProviderRouter:
 
         return result
 
+    def provider(self, provider_id: ProviderId) -> AIProvider | None:
+        """Acesso ao provider instanciado — usado por quem precisa consultar
+        `free_models()` para escolher uma rota alternativa (v1.3.2). Leitura
+        pura, sem rede."""
+        return self._registry.get(provider_id)
+
     def configured_provider_ids(self) -> list[ProviderId]:
         """Providers com credencial presente, na ordem de preferência do
         registry. Síncrono e sem rede — usado por `AIService.is_available()`,

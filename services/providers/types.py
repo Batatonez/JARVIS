@@ -115,6 +115,34 @@ class CostInfo:
 
 
 @dataclass(frozen=True)
+class ProviderMessage:
+    """A mensagem do provider já SEPARADA por natureza (v1.3.2).
+
+    Antes, `AIExecutionResult.output` era simplesmente `message.content`, e
+    tudo que viesse ali virava mensagem de `assistant` no chat. Isso é frágil:
+    a resposta de uma API compatível com OpenAI carrega campos de naturezas
+    completamente diferentes no mesmo objeto, e só UM deles é destinado ao
+    usuário.
+
+        visible_content  -> pode virar mensagem de `assistant`
+        reasoning        -> raciocínio interno; NUNCA vai para a UI nem para o TTS
+        refusal          -> recusa estruturada do modelo (diagnóstico)
+
+    Manter isto como um tipo, e não como três strings soltas, é o que impede
+    um caminho futuro de "aproveitar o reasoning quando o content vier vazio"
+    — que seria exatamente como o raciocínio interno vazaria para o chat.
+    """
+
+    visible_content: str = ""
+    reasoning: str = ""
+    refusal: str | None = None
+
+    @property
+    def has_visible_content(self) -> bool:
+        return bool(self.visible_content.strip())
+
+
+@dataclass(frozen=True)
 class AIExecutionResult:
     success: bool
     provider: ProviderId
@@ -124,9 +152,22 @@ class AIExecutionResult:
     # (ex.: o provider redirecionou pra outra rota). Nunca copiar
     # `requested_model` pra cá "por conveniência".
     served_model: ModelId | None
+    # SOMENTE conteúdo visível. Continua sendo `output` para não quebrar os
+    # chamadores existentes, mas agora é alimentado por
+    # `ProviderMessage.visible_content`, nunca pelo `message` cru.
     output: str = ""
+    # Raciocínio interno e recusa: disponíveis para log/diagnóstico, nunca
+    # para a UI (ver `ProviderMessage`).
+    reasoning: str = ""
+    refusal: str | None = None
     usage: UsageInfo | None = None
     cost: CostInfo | None = None
     message_id: str | None = None
     duration_ms: float = 0.0
     error: str | None = None
+
+    @property
+    def has_visible_content(self) -> bool:
+        """`True` só quando existe texto de verdade para mostrar. Metadata
+        sozinha (usage, custo, modelo, raciocínio) NÃO conta como resposta."""
+        return bool((self.output or "").strip())

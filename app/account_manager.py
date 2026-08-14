@@ -31,7 +31,7 @@ from services import account_deletion, memory_migration, session_store
 from services.account_service import AccountService
 from services.ai_service import AIService
 from services.chat_title_service import ChatTitleService
-from services.conversation_repository import ConversationRepository, derive_title
+from services.conversation_repository import ConversationRepository
 from services.email_change_service import (
     EmailChangeRequestResult,
     EmailChangeService,
@@ -560,9 +560,17 @@ class AccountManager:
             return
 
         if self._current_conversation_id is None:
-            title = derive_title(messages[0].content)
+            # A conversa nasce com o título PADRÃO ("Nova conversa"), nunca
+            # com a primeira mensagem copiada.
+            #
+            # Este era o bug do item 5 da v1.3.2: aqui havia
+            # `derive_title(messages[0].content)`, que gravava a própria
+            # pergunta como nome do chat. Como o título automático só roda
+            # depois da primeira resposta — e não roda de jeito nenhum sem IA
+            # configurada — o nome copiado era o que ficava para sempre. Ver
+            # `_maybe_generate_title`.
             self._current_conversation_id = self._conversations.create_conversation(
-                self._current_user.id, title=title
+                self._current_user.id
             )
 
         for message in messages:

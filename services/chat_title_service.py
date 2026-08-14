@@ -40,7 +40,10 @@ MAX_TITLE_LENGTH = 60
 _PROMPT = (
     "Gere um título curto para esta conversa, em português.\n"
     "Regras: de 2 a 6 palavras; sem aspas; sem markdown; sem ponto final; "
-    "sem emoji; não copie a mensagem inteira; descreva o ASSUNTO.\n"
+    "sem emoji; NÃO copie nem repita a mensagem do usuário; NÃO responda à "
+    "conversa; descreva o ASSUNTO em outras palavras.\n"
+    "Exemplo: para uma saudação casual, um título adequado é "
+    "'Conversa com JARVIS'.\n"
     "Responda apenas com o título.\n\n"
     "Mensagem do usuário: {user}\n"
     "Resposta do assistente: {assistant}\n"
@@ -58,6 +61,55 @@ _MARKDOWN_CHARS = re.compile(r"[*_`#>\[\]()]")
 _EMOJI = re.compile(
     "[\U0001f000-\U0001faff\U00002190-\U000021ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f]"
 )
+
+
+def _significant_words(text: str) -> set[str]:
+    cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in text or "")
+    return {word for word in cleaned.split() if len(word) > 2}
+
+
+def echoes_message(title: str, message: str) -> bool:
+    """`True` quando o "título" é só a mensagem do usuário de volta.
+
+    Item 11 da v1.3.2. Cobre três formas do mesmo problema:
+
+    - título idêntico à mensagem (ignorando caixa e pontuação);
+    - título que é PREFIXO da mensagem — a assinatura de truncamento
+      ("Meu microfone está transcrevendo" de "Meu microfone está
+      transcrevendo tudo errado.");
+    - título cujas palavras significativas são todas da mensagem **e** que
+      cobre a maior parte dela.
+
+    **Não** basta ser substring. Um título curto e bom naturalmente aparece
+    dentro da mensagem: "2FA no JARVIS" está literalmente dentro de "Me
+    explica como funciona 2FA no JARVIS", e é exatamente o título que
+    queremos (item 10, exemplo 4). Foi por isso que a regra de substring
+    genérica saiu — ela reprovava títulos corretos.
+    """
+    if not title or not message:
+        return False
+
+    def normalize(text: str) -> str:
+        return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in text).split())
+
+    normalized_title = normalize(title)
+    normalized_message = normalize(message)
+    if not normalized_title:
+        return False
+    if normalized_title == normalized_message:
+        return True
+    if normalized_message.startswith(normalized_title):
+        return True
+
+    title_words = _significant_words(title)
+    message_words = _significant_words(message)
+    if not title_words or not message_words:
+        return False
+    if not title_words.issubset(message_words):
+        return False
+    # Todas as palavras vieram da mensagem: só é eco se também cobrir a maior
+    # parte dela (senão é um recorte legítimo do assunto).
+    return len(title_words) / len(message_words) >= 0.7
 
 
 def clean_title(raw: str) -> str:
@@ -126,4 +178,14 @@ class ChatTitleService:
         if not title:
             logger.debug("Título automático descartado por não atender às regras de formato.")
             return None
+        # Compara com as DUAS mensagens. Modelos pequenos erram de dois
+        # jeitos: devolvendo a pergunta ("Opa! E aí, tudo bem?") ou
+        # RESPONDENDO a conversa em vez de nomeá-la — aí o "título" vira a
+        # resposta do assistente cortada em 6 palavras. O segundo caso
+        # apareceu no smoke test da v1.3.2 e não era pego só checando a
+        # mensagem do usuário.
+        for source in (user_message, assistant_message):
+            if echoes_message(title, source):
+                logger.debug("Título automático descartado por repetir a conversa.")
+                return None
         return title

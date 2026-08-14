@@ -10,7 +10,7 @@ from pathlib import Path
 
 from services.ai_service import AIService, AIServiceUnavailableError
 from services.chat_title_service import ChatTitleService, clean_title
-from services.conversation_repository import ConversationRepository, derive_title, sanitize_title
+from services.conversation_repository import ConversationRepository, default_title, sanitize_title
 from services.local_database import connect
 from services.user_repository import UserRepository
 
@@ -71,8 +71,10 @@ class TitleSanitizationTests(unittest.TestCase):
         self.assertLessEqual(len(result), 61)
         self.assertTrue(result.endswith("…"))
 
-    def test_derive_title_is_the_fallback_not_the_default(self) -> None:
-        self.assertEqual(derive_title("Quero montar um PC branco"), "Quero montar um PC branco")
+    def test_default_title_never_derives_from_the_message(self) -> None:
+        """v1.3.2: `derive_title(first_message)` foi REMOVIDO. Um chat novo
+        nasce com o título padrão, nunca com a pergunta copiada."""
+        self.assertEqual(default_title(), "Nova conversa")
 
 
 class CleanTitleTests(unittest.TestCase):

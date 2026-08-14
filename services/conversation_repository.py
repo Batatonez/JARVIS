@@ -32,13 +32,20 @@ def sanitize_title(title: str) -> str:
     return text[:_MAX_TITLE_LENGTH].rstrip() + "…"
 
 
-def derive_title(first_message_text: str) -> str:
-    """Título provisório a partir das primeiras palavras da primeira
-    mensagem. Continua existindo como **fallback** do `ChatTitleService`
-    (v1.3): quando não há IA configurada, rota gratuita ou resposta
-    utilizável, é melhor um recorte do texto do que "Nova conversa" para
-    sempre (item 19)."""
-    return sanitize_title(first_message_text)
+def default_title() -> str:
+    """Título de um chat recém-criado. Um chat NUNCA nasce com a primeira
+    mensagem como nome.
+
+    **Removido na v1.3.2: `derive_title(first_message)`.** Ele existia como
+    "fallback" do `ChatTitleService`, com a ideia de que um recorte do texto
+    seria melhor que "Nova conversa". Na prática era o oposto: como o título
+    automático só roda depois da primeira resposta — e não roda sem IA
+    configurada — o recorte era o nome definitivo, e a sidebar ficava cheia
+    de "Opa! E aí, tudo bem?".
+
+    A regra agora é a do item 12: melhor "Nova conversa" do que um título
+    ruim. Truncar uma pergunta não é resumir um assunto."""
+    return _DEFAULT_TITLE
 
 
 class ConversationRepository:

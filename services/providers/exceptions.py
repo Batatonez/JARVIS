@@ -33,3 +33,22 @@ class NoFreeModelAvailableError(ProviderError):
 
     def __init__(self, message: str = "Nenhuma rota gratuita disponível.") -> None:
         super().__init__(f"{self.CODE}: {message}")
+
+
+class EmptyProviderResponseError(ProviderError):
+    """O provider respondeu com sucesso e metadata válida, mas **sem conteúdo
+    visível** (v1.3.2).
+
+    Acontece de verdade: um modelo de raciocínio pode gastar todo o orçamento
+    de tokens no `reasoning` e devolver `content: null` com
+    `finish_reason: "length"` — capturado em `tests/fixtures_openrouter.py`.
+
+    Existe como erro próprio (e não como "resposta vazia") porque a diferença
+    importa: metadata **nunca** pode ser persistida como mensagem de
+    `assistant`, e o chamador precisa poder distinguir "o modelo não
+    respondeu" de "o modelo respondeu string vazia de propósito"."""
+
+    CODE = "EMPTY_PROVIDER_RESPONSE"
+
+    def __init__(self, message: str = "O provider respondeu sem conteúdo visível.") -> None:
+        super().__init__(f"{self.CODE}: {message}")

@@ -53,6 +53,9 @@ class AppErrorCode(Enum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
     NO_FREE_MODEL_AVAILABLE = "no_free_model_available"
+    # v1.3.2 — provider respondeu com metadata válida mas sem conteúdo
+    # visível. Metadata nunca vira mensagem de assistant.
+    EMPTY_PROVIDER_RESPONSE = "empty_provider_response"
     # --- Verificação de e-mail (v1.0 — ver services/email_verification_service.py) ---
     EMAIL_SERVICE_NOT_CONFIGURED = "email_service_not_configured"
     VERIFICATION_CODE_INVALID = "verification_code_invalid"

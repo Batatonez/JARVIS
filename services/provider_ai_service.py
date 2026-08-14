@@ -29,6 +29,7 @@ import logging
 from app.models import AppErrorCode
 from services.ai_service import AIService, AIServiceUnavailableError
 from services.providers.exceptions import (
+    EmptyProviderResponseError,
     NoFreeModelAvailableError,
     ProviderError,
     ProviderNotConfiguredError,
@@ -45,10 +46,16 @@ logger = logging.getLogger(__name__)
 # vê stack trace nem corpo de resposta HTTP (item 66 do escopo v1.0).
 _ERROR_CODES: tuple[tuple[type[Exception], AppErrorCode], ...] = (
     (NoFreeModelAvailableError, AppErrorCode.NO_FREE_MODEL_AVAILABLE),
+    (EmptyProviderResponseError, AppErrorCode.EMPTY_PROVIDER_RESPONSE),
     (RateLimitedError, AppErrorCode.PROVIDER_RATE_LIMITED),
     (ProviderNotConfiguredError, AppErrorCode.PROVIDER_NOT_CONFIGURED),
     (ProviderUnavailableError, AppErrorCode.PROVIDER_UNAVAILABLE),
 )
+
+# Uma única nova tentativa quando o provider devolve metadata sem conteúdo
+# visível (v1.3.2). Um retry, não um laço: se o segundo modelo também não
+# responder, o usuário vê um erro claro em vez de o app ficar tentando.
+_EMPTY_RESPONSE_RETRIES = 1
 
 
 def classify_provider_error(exc: Exception) -> AppErrorCode:
@@ -122,43 +129,113 @@ class ProviderRouterAIService(AIService):
         if not self.is_available():
             raise AIServiceUnavailableError("Nenhum provider de IA está configurado.")
 
-        request = RouteRequest(
+        result = await self._execute_with_retry(
             prompt=message,
             system_prompt=self._system_prompt or None,
             history=tuple(self._history[-self._max_history_messages :]),
             max_tokens=self._max_tokens,
-            timeout_s=self._timeout_s,
-            free_only=self._free_only,
-            preferred_provider=self._preferred_provider,
         )
 
-        try:
-            result = await self._router.execute(request)
-        except ProviderError as exc:
-            # Toda falha de provider vira AIServiceUnavailableError com
-            # mensagem já segura — é o que o Orchestrator sabe tratar, e o
-            # `code` fica disponível para quem quiser diferenciar.
-            code = classify_provider_error(exc)
-            logger.warning("Falha do provider (%s): %s", code.value, exc)
-            raise AIServiceUnavailableError(str(exc)) from exc
-
-        if not result.success:
-            raise AIServiceUnavailableError(result.error or "O provider de IA não conseguiu responder.")
-
-        reply = (result.output or "").strip()
-        if not reply:
-            # Aconteceu de verdade no smoke test da v1.0: um modelo de
-            # raciocínio gastou todo o orçamento de saída em raciocínio
-            # interno e devolveu texto vazio. Melhor falhar claro do que
-            # persistir uma resposta vazia como se fosse válida.
-            raise AIServiceUnavailableError(
-                "O modelo respondeu sem conteúdo (orçamento de tokens pode ter sido consumido "
-                "por raciocínio interno). Tente novamente."
-            )
-
+        reply = result.output.strip()
         self._history.append(("user", message))
         self._history.append(("assistant", reply))
-        self._last_result_summary = {
+        self._last_result_summary = self._summarize(result)
+        return reply
+
+    async def _execute_with_retry(
+        self, *, prompt: str, system_prompt: str | None, history: tuple, max_tokens: int
+    ):
+        """Executa e, se a resposta vier sem conteúdo visível, tenta UMA vez
+        com o PRÓXIMO modelo gratuito da lista.
+
+        Repetir com o mesmo modelo teria pouca chance de mudar alguma coisa —
+        um modelo que gastou o orçamento inteiro em raciocínio tende a fazer
+        de novo. Trocar de rota é o que realmente resolve, e a lista de
+        modelos gratuitos de chat existe exatamente para isso
+        (`OpenRouterProvider.free_models`).
+
+        `free_only` continua valendo em toda tentativa: o alternativo sai da
+        mesma lista de gratuitos, nunca de um modelo pago (item 3)."""
+        attempted: list[str] = []
+        last_error: EmptyProviderResponseError | None = None
+
+        for attempt in range(_EMPTY_RESPONSE_RETRIES + 1):
+            preferred_model = self._alternate_model(attempted) if attempt else None
+            if attempt and preferred_model is None:
+                break  # não há outra rota gratuita para tentar
+
+            request = RouteRequest(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                history=history,
+                max_tokens=max_tokens,
+                timeout_s=self._timeout_s,
+                free_only=self._free_only,
+                preferred_provider=self._preferred_provider,
+                preferred_model=preferred_model,
+            )
+
+            try:
+                result = await self._router.execute(request)
+            except ProviderError as exc:
+                # Toda falha de provider vira AIServiceUnavailableError com
+                # mensagem já segura — é o que o Orchestrator sabe tratar, e o
+                # `code` fica disponível para quem quiser diferenciar.
+                code = classify_provider_error(exc)
+                logger.warning("Falha do provider (%s): %s", code.value, exc)
+                raise AIServiceUnavailableError(str(exc)) from exc
+
+            if not result.success:
+                raise AIServiceUnavailableError(
+                    result.error or "O provider de IA não conseguiu responder."
+                )
+
+            if result.has_visible_content:
+                return result
+
+            # Metadata válida, nenhum conteúdo visível. NUNCA persistir isto
+            # como resposta — nem o `reasoning`, nem o modelo, nem o usage.
+            #
+            # Guarda o modelo PEDIDO (e o servido, quando diferente): é o
+            # pedido que controlamos. O servido pode ser um slug que nem está
+            # na nossa lista — foi o que aconteceu com o agregador — e
+            # descartar só ele faria o retry repetir a mesma rota.
+            attempted.append(result.requested_model)
+            if result.served_model and result.served_model != result.requested_model:
+                attempted.append(result.served_model)
+            logger.info(
+                "Resposta sem conteúdo visível (served_model=%r, reasoning=%d chars); "
+                "tentativa %d de %d.",
+                result.served_model,
+                len(result.reasoning or ""),
+                attempt + 1,
+                _EMPTY_RESPONSE_RETRIES + 1,
+            )
+            last_error = EmptyProviderResponseError(
+                "O modelo respondeu sem conteúdo visível (o orçamento de tokens pode ter "
+                "sido consumido por raciocínio interno). Tente novamente."
+            )
+
+        assert last_error is not None
+        raise AIServiceUnavailableError(str(last_error)) from last_error
+
+    def _alternate_model(self, attempted: list[str]) -> str | None:
+        """Próximo modelo gratuito que ainda não foi tentado nesta pergunta."""
+        for provider_id in self._router.configured_provider_ids():
+            provider = self._router.provider(provider_id)
+            if provider is None:
+                continue
+            for model in provider.free_models():
+                if model not in attempted:
+                    return model
+        return None
+
+    @staticmethod
+    def _summarize(result) -> dict[str, object]:
+        """Metadata técnica da resposta. Note que `reasoning` entra só como
+        TAMANHO, nunca como texto: o raciocínio interno não pode vazar nem
+        para o painel de diagnóstico do HUD."""
+        return {
             "provider": result.provider.value,
             "requested_model": result.requested_model,
             "served_model": result.served_model,
@@ -168,8 +245,9 @@ class ProviderRouterAIService(AIService):
             "cost": result.cost.amount if result.cost else None,
             "is_free": result.cost.is_free if result.cost else None,
             "duration_ms": round(result.duration_ms, 1),
+            "reasoning_chars": len(result.reasoning or ""),
+            "refused": result.refusal is not None,
         }
-        return reply
 
     @property
     def supports_isolated_requests(self) -> bool:
