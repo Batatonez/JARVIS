@@ -20,16 +20,21 @@ from app.commands import JarvisExit
 
 logger = logging.getLogger(__name__)
 
-BANNER = """JARVIS
-Core v1.1
-
-Sistema iniciado.
-Digite uma mensagem ou /help.
-"""
+def build_banner(version: str) -> str:
+    """A versão vem de `Settings.core_version` (fonte única) em vez de ser
+    repetida aqui — na v1.1 este banner ficou preso em "v1.0" justamente
+    por ser uma string solta que ninguém lembrou de atualizar."""
+    return (
+        "JARVIS\n"
+        f"Core v{version}\n"
+        "\n"
+        "Sistema iniciado.\n"
+        "Digite uma mensagem ou /help.\n"
+    )
 
 
 async def run(application: JarvisApplication) -> None:
-    print(BANNER)
+    print(build_banner(application.get_status().core_version))
     await application.start()
 
     try:

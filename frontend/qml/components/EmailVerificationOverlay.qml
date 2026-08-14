@@ -191,11 +191,9 @@ Item {
                 wrapMode: Text.Wrap
             }
 
-            Row {
-                width: parent.width
-                spacing: Theme.spacingSm
-                layoutDirection: Qt.RightToLeft
-
+            // `ModalButtonRow` (Flow) e não `Row`: três botões não cabem em
+            // uma linha só no cartão de 420px — ver ModalButtonRow.qml.
+            ModalButtonRow {
                 ActionButton {
                     label: overlay.busy ? "VERIFICANDO..." : "VERIFICAR"
                     emphasis: true

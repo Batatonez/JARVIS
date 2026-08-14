@@ -125,10 +125,9 @@ Item {
                 }
             }
 
-            Row {
-                width: parent.width
-                spacing: Theme.spacingSm
-                layoutDirection: Qt.RightToLeft
+            // Flow em vez de Row: botoes quebram linha em vez de vazar do
+            // cartao quando nao cabem (ver ModalButtonRow.qml).
+            ModalButtonRow {
 
                 ActionButton {
                     label: "PERMITIR"

@@ -85,6 +85,28 @@ class ConversationRepository:
         self._conn.commit()
         return True
 
+    def update_message_content(
+        self, conversation_id: str, user_id: str, message_id: str, content: str
+    ) -> bool:
+        """Reescreve o texto de uma mensagem já persistida (v1.2 —
+        "Regenerate"). Mantém id/role/timestamp: a resposta regenerada
+        ocupa a mesma linha, então o histórico não duplica nem embaralha.
+
+        Como todo método daqui, é escopado por `user_id` — regenerar não
+        pode virar um caminho para escrever na conversa de outro usuário."""
+        if not self._owns(conversation_id, user_id):
+            return False
+        cursor = self._conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ?",
+            (content, message_id, conversation_id),
+        )
+        self._conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), conversation_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     def rename_conversation(self, conversation_id: str, user_id: str, title: str) -> bool:
         if not self._owns(conversation_id, user_id):
             return False

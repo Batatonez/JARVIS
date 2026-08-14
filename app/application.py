@@ -222,6 +222,77 @@ class JarvisApplication:
             return text
         return f"{memory_block}\n\n---\n\nMensagem atual do usuário:\n{text}"
 
+    async def regenerate(self, assistant_message_id: str) -> AssistantResponse | None:
+        """Gera de novo a resposta `assistant_message_id`, reusando a mesma
+        mensagem de usuário que a originou (v1.2 — botão "Regenerate").
+
+        Diferenças deliberadas em relação a `send_message()`:
+
+        - **não** cria uma nova mensagem do usuário (não duplica o prompt);
+        - substitui o texto da resposta antiga *no lugar*, preservando id,
+          papel e posição — assim o histórico não embaralha e a persistência
+          continua consistente (o `AccountManager` reescreve a mesma linha);
+        - funciona para qualquer resposta do histórico, não só a última.
+
+        Retorna `None` se o id não for de uma resposta do assistente ou se
+        não houver mensagem de usuário antes dela."""
+        prompt_message = self._conversation.prompt_for(assistant_message_id)
+        if prompt_message is None:
+            logger.info("Regeneração ignorada: mensagem %s não é regenerável.", assistant_message_id)
+            return None
+
+        if self._current_request_task is not None and not self._current_request_task.done():
+            return AssistantResponse(
+                status=ResponseStatus.ERROR,
+                error=AppError(AppErrorCode.JARVIS_BUSY, "O JARVIS está processando outra mensagem. Aguarde."),
+            )
+        if not self._core.ai_service.is_available():
+            return AssistantResponse(
+                status=ResponseStatus.ERROR,
+                error=AppError(AppErrorCode.AI_UNAVAILABLE, "O serviço de inteligência ainda não está configurado."),
+            )
+
+        logger.info("Regenerando resposta %s.", assistant_message_id)
+        self._emit("response.started")
+
+        failure: dict[str, str] = {}
+
+        def _capture_failure(**payload: object) -> None:
+            failure["error"] = str(payload.get("error", ""))
+
+        self._core.event_bus.subscribe("ai.request.failed", _capture_failure)
+        task: asyncio.Task[str] = asyncio.ensure_future(self._core.handle_input(prompt_message.content))
+        self._current_request_task = task
+        try:
+            raw_reply = await task
+        except asyncio.CancelledError:
+            self._emit("response.failed", {"reason": "cancelled"})
+            return AssistantResponse(status=ResponseStatus.CANCELLED)
+        except Exception:
+            logger.exception("Erro interno inesperado ao regenerar resposta.")
+            self._emit("response.failed", {"reason": "internal_error"})
+            return AssistantResponse(
+                status=ResponseStatus.ERROR,
+                error=AppError(AppErrorCode.INTERNAL_ERROR, "Ocorreu um erro interno inesperado."),
+            )
+        else:
+            if failure:
+                self._emit("response.failed", {"reason": "ai_error"})
+                return AssistantResponse(
+                    status=ResponseStatus.ERROR,
+                    error=AppError(AppErrorCode.AI_UNAVAILABLE, failure["error"]),
+                )
+            updated = self._conversation.replace_content(assistant_message_id, raw_reply)
+            if updated is None:  # pragma: no cover - a mensagem sumiu no meio do caminho
+                return None
+            self._emit("response.regenerated", {"message_id": updated.id})
+            return AssistantResponse(
+                status=ResponseStatus.SUCCESS, message_id=updated.id, content=raw_reply
+            )
+        finally:
+            self._core.event_bus.unsubscribe("ai.request.failed", _capture_failure)
+            self._current_request_task = None
+
     async def cancel_current_request(self) -> bool:
         """Cancela a requisição em andamento, se houver. Usa
         `asyncio.Task.cancel()` (nunca mata processos arbitrariamente).
@@ -388,6 +459,12 @@ class JarvisApplication:
 
     def get_messages(self) -> list[Message]:
         return self._conversation.messages
+
+    def get_messages_by_id(self, message_id: str) -> Message | None:
+        """Uma mensagem específica do histórico atual, ou `None`. Existe
+        para quem precisa reler o estado depois de um evento (ex.: persistir
+        uma resposta regenerada) sem varrer `get_messages()` por fora."""
+        return self._conversation.find(message_id)
 
     def memory_status(self) -> tuple[bool, bool]:
         """(perfil carregado, preferências carregadas) — para um frontend

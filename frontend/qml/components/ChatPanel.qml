@@ -14,6 +14,11 @@ Item {
     property bool pending: false
     readonly property bool hasMessages: listView.count > 0
 
+    // Repassados ao Main.qml, que fala com o Bridge — o painel de chat não
+    // conhece o Bridge diretamente.
+    signal copyRequested(string rawText)
+    signal regenerateRequested(string messageId)
+
     Column {
         anchors.centerIn: parent
         spacing: Theme.spacingSm
@@ -63,6 +68,8 @@ Item {
         // do usuário). Foi exatamente o bug corrigido na v1.1.
         delegate: MessageItem {
             width: listView.width
+            onCopyRequested: (rawText) => panel.copyRequested(rawText)
+            onRegenerateRequested: (messageId) => panel.regenerateRequested(messageId)
         }
 
         add: Transition {

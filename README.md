@@ -8,6 +8,12 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
+🚧 **JARVIS v1.2 (em andamento) — Chat UX + Security Hardening.** Sobre a v1.1: Markdown renderizado de verdade no chat (com sanitização — HTML embutido nunca é interpretado), botões de **Copiar** e **Regenerar** por mensagem, horário exibido no fuso local (era UTC), e correção de causa dos modais tortos/cortados. Auditoria de segurança de 20 pontos classificada em [`docs/security-checklist.md`](docs/security-checklist.md).
+
+**Ainda não entregue nesta versão** (ver relatório): anexos de arquivo, Intelligence Mode (INSTANT/MEDIUM/HIGH), rename de chat e títulos automáticos.
+
+
+
 ✅ **JARVIS v1.1 — correções de uso real.** Sobre a v1.0, corrige o que apareceu usando o app de verdade: mensagens do chat que apareciam vazias e rotuladas "JARVIS" mesmo sendo do usuário (causa: em Qt 6 um delegate com `required property` deixa de receber o objeto `model`, e os bindings viravam `undefined`); memória que não atravessava conversas (agora há memória de longo prazo por usuário, isolada e deduplicada); `.env` que não era carregado automaticamente; e o status de IA técnico demais no HUD (`OPENROUTER (FREE)` → `AI CONFIGURED`). Sem redesign, sem provider novo, sem billing. Detalhes em [`docs/architecture.md`](docs/architecture.md).
 
 ✅ **JARVIS v1.0 — AI integrada, contas endurecidas e verificação de e-mail.** Primeira versão em que o JARVIS **conversa de verdade**: o `ProviderRouter` está conectado ao fluxo real do aplicativo (`JarvisApplication → AIService → ProviderRouter → OpenRouter`), com o JARVIS — não o Ruflo — decidindo provider, modelo e custo. Modo `free_only` ligado por padrão: nunca há queda silenciosa para um modelo pago; sem rota gratuita, o erro é explícito (`NO_FREE_MODEL_AVAILABLE`).

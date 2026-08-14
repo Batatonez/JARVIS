@@ -316,6 +316,8 @@ Window {
                     Layout.fillHeight: true
                     model: bridge.messages
                     pending: bridge.busy
+                    onCopyRequested: (rawText) => bridge.copyToClipboard(rawText)
+                    onRegenerateRequested: (messageId) => bridge.regenerateMessage(messageId)
                 }
             }
         }

@@ -361,6 +361,71 @@ reenviar?) acontece no backend; o frontend nunca é autoridade sobre isso.
 Sem SMTP configurado, o overlay diz claramente que o envio não está
 configurado e que a conta continua funcionando — nunca finge ter enviado.
 
+## Chat: Markdown e ações (v1.2)
+
+**Markdown renderizado.** O chat mostra Markdown de verdade (headings,
+negrito/itálico, listas, código inline e em bloco, blockquote, regras
+horizontais, tabelas) via `TextEdit.MarkdownText` — o Qt renderiza
+nativamente. Antes a marcação aparecia crua (`### Título`, `**negrito**`).
+
+**O texto RAW nunca muda.** O modelo expõe dois papéis:
+`content` (RAW, exatamente como está no banco — é o que o Copy entrega) e
+`markdown` (o mesmo texto sanitizado, só para exibição). Nada da
+sanitização é persistido.
+
+**Segurança.** O renderizador de Rich Text do Qt também interpreta HTML
+embutido, e o texto vem de uma IA — então tudo passa por
+`services/markdown_safety.py` antes: tags viram texto literal
+(`&lt;script&gt;`), e `javascript:`/`vbscript:`/`data:`/`file:` são
+quebrados. **Escapamos em vez de remover**, para o usuário continuar vendo
+o que a IA escreveu (importante quando se pede "me mostre um exemplo de
+HTML"). Blocos de código ficam intactos — lá dentro, HTML é conteúdo que se
+quer ler. Links são renderizados com estilo mas **não são clicáveis**:
+abrir URL vinda da IA com um clique seria um vetor de phishing.
+
+**Ações por mensagem.** Abaixo de cada mensagem, controles discretos que
+ganham presença no hover:
+
+| Ação | Onde | O que faz |
+|---|---|---|
+| Copiar | todas | Copia o RAW — nunca "YOU"/"JARVIS", horário ou markup renderizado. Mostra ✓ por ~1,6s. |
+| Regenerar | só respostas do JARVIS | Gera outra resposta para a **mesma** pergunta. |
+
+**Regenerate** acha a mensagem de usuário que originou aquela resposta
+específica (procurando para trás a partir da posição dela), então funciona
+em respostas do meio do histórico — não só na última. A resposta antiga é
+substituída *no lugar*, preservando id, papel e posição: o prompt não
+duplica, o histórico não embaralha, e o banco reescreve a mesma linha.
+
+## Horário local (v1.2)
+
+O horário das mensagens era exibido em UTC — uma mensagem enviada às 21:11
+em UTC-3 aparecia como 00:11. A persistência já estava certa (UTC com
+offset, que é o correto para um instante absoluto); o erro estava só na
+ponta, que formatava o UTC direto. Agora a conversão usa `astimezone()`,
+sem offset fixo nem fuso hardcoded — continua correto em outro país ou
+depois de mudança de horário de verão.
+
+## Correções visuais da v1.2
+
+**Modais tortos/cortados** — os quatro overlays (e-mail, voz, conta,
+permissão) usavam `Row { layoutDirection: RightToLeft }` para os botões. Um
+`Row` não quebra linha nem encolhe filhos: medindo o overlay de e-mail, a
+linha tinha `width=364` para `childrenRect.width=616`, com dois botões em
+**x negativo** (-70 e -252) desenhados fora do cartão. Era isso que fazia o
+modal parecer deslocado com a borda cortada.
+
+Corrigido na causa, com componente compartilhado:
+
+- `ModalButtonRow.qml` (um `Flow`) — mesmo alinhamento à direita, mas
+  quebra para a linha de baixo quando não cabe;
+- `ActionButton` ganhou teto de largura (`Math.min(natural, parent.width)`)
+  e elide no rótulo — um `Flow` não resolve um item **sozinho** maior que a
+  linha, que era o caso de "BAIXAR MODELO DE VOZ (~45 MB)" (436px em 384px).
+
+Sem offsets mágicos. `tests/test_overlay_layout.py` mede geometria real em
+6 resoluções e falha se alguém reintroduzir o padrão.
+
 ## Correções visuais da v1.0
 
 **Overflow do `VoiceSetupOverlay`** — as linhas rótulo/valor (Idioma,

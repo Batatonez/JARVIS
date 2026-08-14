@@ -372,7 +372,12 @@ class AccountManager:
                 self.app.unsubscribe(self._event_queue)
 
     def _persist_new_messages(self, event: AppEvent) -> None:
-        if event.type not in _MESSAGE_EVENTS or self.app is None or self._current_user is None:
+        if self.app is None or self._current_user is None:
+            return
+        if event.type == "response.regenerated":
+            self._persist_regenerated_message(event)
+            return
+        if event.type not in _MESSAGE_EVENTS:
             return
         messages = self.app.get_messages()
         if not messages:
@@ -391,6 +396,20 @@ class AccountManager:
             if saved:
                 self._persisted_message_ids.add(message.id)
                 self._extract_long_term_memory(message)
+
+    def _persist_regenerated_message(self, event: AppEvent) -> None:
+        """"Regenerate" reescreve uma resposta que JÁ existe no banco: o id
+        não muda, então `_persist_new_messages` a puluaria (já está em
+        `_persisted_message_ids`). Aqui atualizamos a linha existente."""
+        message_id = event.payload.get("message_id")
+        if not message_id or self._current_conversation_id is None:
+            return
+        message = self.app.get_messages_by_id(str(message_id))
+        if message is None:
+            return
+        self._conversations.update_message_content(
+            self._current_conversation_id, self._current_user.id, message.id, message.content
+        )
 
     def _extract_long_term_memory(self, message: Message) -> None:
         """Guarda fatos duráveis ditos pelo usuário (v1.1). Só mensagens do

@@ -1,5 +1,21 @@
 # Segurança do JARVIS
 
+> Classificação item a item (o que existe / falta / não se aplica) em [`docs/security-checklist.md`](security-checklist.md).
+
+## Conteúdo renderizado no chat (v1.2)
+
+O HUD passou a renderizar Markdown, e o renderizador de Rich Text do Qt
+**também interpreta HTML embutido**. Como o texto vem de uma IA (e, por
+tabela, de qualquer coisa colada no prompt), tudo passa por
+`services/markdown_safety.py` antes de chegar lá:
+
+- tags HTML viram texto literal (`<script>` → `&lt;script&gt;`) — **escapadas, não removidas**, para não alterar silenciosamente o que a IA escreveu;
+- `javascript:`, `vbscript:`, `data:` e `file:` são quebrados (`&#58;`);
+- blocos de código e código inline ficam intactos (lá dentro, HTML é conteúdo a ser lido, e o Qt não o interpreta);
+- links são renderizados mas **não são clicáveis** — sem `onLinkActivated`, clicar não faz nada. Abrir URL vinda da IA com um clique seria um vetor de phishing, e o objetivo não é ter um mini-navegador embutido.
+
+O texto RAW no banco nunca é alterado: a sanitização é exclusivamente da camada de exibição.
+
 > Documento honesto sobre o que o JARVIS v1.0 protege, **como** protege, e — igualmente importante — o que ele **não** protege. Nada aqui descreve proteção que não existe no código.
 
 Modelo de ameaça desta versão: **aplicativo desktop local, single-machine**. Não há servidor, não há conta na nuvem, não há multi-tenancy remota. O banco fica no disco do próprio usuário. Isso muda o peso de várias defesas — está anotado caso a caso.

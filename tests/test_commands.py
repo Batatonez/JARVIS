@@ -20,7 +20,11 @@ class CommandsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_reports_version_state_and_services(self) -> None:
         response = await self.core.handle_input("/status")
-        self.assertIn("1.1.0", response)
+        # Ancorado na fonte central de versão em vez de uma string fixa:
+        # o que importa é que `/status` reporte a versão real do Core, e
+        # não que ela seja um número específico. Antes disto, todo bump de
+        # versão quebrava este teste (aconteceu na v1.0 e na v1.2).
+        self.assertIn(self.core.settings.core_version, response)
         self.assertIn("idle", response)
         self.assertIn("Memória: disponível", response)
         self.assertIn("IA: não configurada", response)

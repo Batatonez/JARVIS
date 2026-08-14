@@ -24,6 +24,7 @@ import contextlib
 import logging
 
 from PySide6.QtCore import Property, QCoreApplication, QObject, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 
 from app.account_manager import (
     AccountLockedError,
@@ -50,6 +51,7 @@ _STATUS_EVENTS = frozenset(
         "jarvis.stopped",
         "response.started",
         "response.completed",
+        "response.regenerated",
         "response.failed",
         "voice.listening.started",
         "voice.listening.stopped",
@@ -63,6 +65,9 @@ _MESSAGE_EVENTS = frozenset(
     {
         "message.received",
         "response.completed",
+        # Regeneração troca o texto de uma mensagem existente — o modelo
+        # precisa ressincronizar para o chat mostrar a resposta nova.
+        "response.regenerated",
         "response.failed",
         "conversation.started",
         "conversation.cleared",
@@ -663,6 +668,37 @@ class JarvisBridge(QObject):
             if response.error.code is AppErrorCode.JARVIS_BUSY:
                 self.busyRejected.emit(response.error.message)
             elif response.error.code is AppErrorCode.INTERNAL_ERROR:
+                self.internalErrorRaised.emit(response.error.message)
+
+    @Slot(str, result=bool)
+    def copyToClipboard(self, text: str) -> bool:
+        """Copia texto para a área de transferência (v1.2 — botão Copy).
+
+        Fica no Bridge, e não em QML, para ser testável sem GUI e para o QML
+        não precisar conhecer a API de clipboard do Qt. O QML passa o papel
+        `content` (RAW), nunca o `markdown` renderizado nem "YOU"/"JARVIS"/
+        horário — o usuário copia exatamente o texto da mensagem."""
+        if not text:
+            return False
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is None:  # pragma: no cover - sem sessão gráfica
+            return False
+        clipboard.setText(text)
+        return True
+
+    @Slot(str)
+    def regenerateMessage(self, message_id: str) -> None:
+        if self._app is not None:
+            asyncio.ensure_future(self._regenerate(message_id))
+
+    async def _regenerate(self, message_id: str) -> None:
+        response = await self._app.regenerate(message_id)
+        if response is None:
+            return
+        if response.status is ResponseStatus.ERROR and response.error is not None:
+            if response.error.code is AppErrorCode.JARVIS_BUSY:
+                self.busyRejected.emit(response.error.message)
+            else:
                 self.internalErrorRaised.emit(response.error.message)
 
     @Slot()
