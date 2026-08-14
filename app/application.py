@@ -497,6 +497,16 @@ class JarvisApplication:
         finally:
             self.unsubscribe(queue)
 
+    def emit_external_event(self, event_type: str, payload: dict | None = None) -> None:
+        """Publica um evento originado FORA da Application Layer.
+
+        Existe para o `AccountManager` avisar o frontend de algo que só ele
+        sabe — hoje, `conversation.retitled` quando o título automático é
+        aplicado (v1.3). Continua sendo o mesmo canal de eventos: o frontend
+        não precisa de um segundo mecanismo de notificação, e a Application
+        Layer não precisa conhecer contas nem persistência para isso."""
+        self._emit(event_type, payload)
+
     def _emit(self, event_type: str, payload: dict | None = None) -> None:
         event = AppEvent(type=event_type, timestamp=datetime.now(timezone.utc), payload=payload or {})
         for queue in list(self._subscribers):

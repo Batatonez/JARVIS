@@ -171,6 +171,36 @@ class ProviderRouterAIService(AIService):
         }
         return reply
 
+    @property
+    def supports_isolated_requests(self) -> bool:
+        return True
+
+    async def ask_isolated(self, prompt: str, *, max_tokens: int = 64) -> str:
+        """Requisição avulsa (v1.3): sem histórico, sem system prompt de
+        identidade, sem gravar nada em `self._history`.
+
+        `free_only` continua sendo o mesmo do serviço — uma tarefa auxiliar
+        jamais pode ser a brecha que gasta dinheiro (item 22)."""
+        if not self.is_available():
+            raise AIServiceUnavailableError("Nenhum provider de IA está configurado.")
+
+        request = RouteRequest(
+            prompt=prompt,
+            system_prompt=None,
+            history=(),
+            max_tokens=max_tokens,
+            timeout_s=self._timeout_s,
+            free_only=self._free_only,
+            preferred_provider=self._preferred_provider,
+        )
+        try:
+            result = await self._router.execute(request)
+        except ProviderError as exc:
+            raise AIServiceUnavailableError(str(exc)) from exc
+        if not result.success:
+            raise AIServiceUnavailableError(result.error or "Sem resposta do provider.")
+        return (result.output or "").strip()
+
     async def close(self) -> None:
         self._session_active = False
         self._history = []

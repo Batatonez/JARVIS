@@ -59,6 +59,19 @@ class AppErrorCode(Enum):
     VERIFICATION_CODE_EXPIRED = "verification_code_expired"
     VERIFICATION_RESEND_TOO_SOON = "verification_resend_too_soon"
     VERIFICATION_TOO_MANY_ATTEMPTS = "verification_too_many_attempts"
+    # --- Conta e 2FA (v1.3 — ver services/account_service.py e two_factor_service.py) ---
+    EMAIL_ALREADY_IN_USE = "email_already_in_use"
+    USERNAME_ALREADY_IN_USE = "username_already_in_use"
+    INVALID_USERNAME = "invalid_username"
+    INVALID_EMAIL = "invalid_email"
+    INVALID_PASSWORD = "invalid_password"
+    REAUTH_REQUIRED = "reauth_required"
+    TWO_FACTOR_REQUIRED = "two_factor_required"
+    TWO_FACTOR_INVALID = "two_factor_invalid"
+    TWO_FACTOR_RATE_LIMITED = "two_factor_rate_limited"
+    TWO_FACTOR_ALREADY_ENABLED = "two_factor_already_enabled"
+    TWO_FACTOR_NOT_ENABLED = "two_factor_not_enabled"
+    CONFIRMATION_MISMATCH = "confirmation_mismatch"
 
 
 @dataclass(frozen=True)
@@ -170,6 +183,9 @@ class User:
     plan: Plan
     email: str | None = None
     email_verified: bool = False
+    # v1.3 — só o FATO de o 2FA estar ligado atravessa para o frontend; o
+    # segredo TOTP nunca sai de `services/user_repository.py`.
+    totp_enabled: bool = False
     created_at: datetime = field(default_factory=_utcnow)
 
 

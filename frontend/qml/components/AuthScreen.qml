@@ -108,7 +108,9 @@ Item {
                 visible: root._mode === "login"
                 spacing: Theme.spacingMd
 
-                AuthField { id: loginUsername; Layout.fillWidth: true; label: "USERNAME" }
+                // v1.3, item 38 — o mesmo campo aceita username OU e-mail;
+                // quem resolve qual dos dois é o backend, numa query só.
+                AuthField { id: loginUsername; Layout.fillWidth: true; label: "USERNAME OR EMAIL" }
                 AuthField { id: loginPassword; Layout.fillWidth: true; label: "SENHA"; isPassword: true
                     onAccepted: loginSubmit.clicked()
                 }

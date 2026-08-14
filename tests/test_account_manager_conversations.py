@@ -106,7 +106,7 @@ class AccountManagerConversationTests(unittest.IsolatedAsyncioTestCase):
             conversation_id = account.current_conversation_id
 
             await account.logout()
-            await account.login(username="alice", password="senha-forte-123")
+            await account.login(identifier="alice", password="senha-forte-123")
 
             # `_open_session` reabre automaticamente a conversa mais recente.
             self.assertEqual(account.current_conversation_id, conversation_id)

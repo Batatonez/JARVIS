@@ -12,6 +12,11 @@ Item {
     signal closeRequested()
     signal logoutRequested()
     signal verifyEmailRequested()
+    // v1.3 — este painel continua sendo o resumo rápido da conta; as telas
+    // completas (perfil/segurança/sessões/exclusão e configuração de voz)
+    // vivem em overlays próprios, abertos daqui.
+    signal settingsRequested()
+    signal voiceSettingsRequested()
 
     visible: opacity > 0
     opacity: open ? 1 : 0
@@ -191,6 +196,17 @@ Item {
             // cartao quando nao cabem (ver ModalButtonRow.qml).
             ModalButtonRow {
 
+                ActionButton {
+                    label: "CONFIGURAÇÕES DA CONTA"
+                    emphasis: true
+                    tint: Theme.blue
+                    onClicked: overlay.settingsRequested()
+                }
+                ActionButton {
+                    label: "VOZ E MICROFONE"
+                    emphasis: false
+                    onClicked: overlay.voiceSettingsRequested()
+                }
                 ActionButton {
                     label: "SAIR"
                     emphasis: false

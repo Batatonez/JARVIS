@@ -55,7 +55,10 @@ class StepResult:
 # Módulos que a voz precisa em runtime. Os nomes de import, não os de
 # pacote: é o import que falha quando falta algo (`PySide6-Essentials`
 # instala `PySide6`, por exemplo).
-_VOICE_IMPORTS = (("vosk", "vosk"), ("sounddevice", "sounddevice"))
+_VOICE_IMPORTS = (("sounddevice", "sounddevice"), ("vosk", "vosk"))
+# v1.3 — engine principal. Ausente, o JARVIS ainda funciona (cai no Vosk),
+# então isto NÃO reprova o setup; só é reportado.
+_WHISPER_IMPORTS = (("faster_whisper", "faster-whisper"), ("numpy", "numpy"))
 
 
 def check_voice_dependencies() -> StepResult:
@@ -75,7 +78,63 @@ def check_voice_dependencies() -> StepResult:
             StepStatus.MISSING,
             f"faltando: {', '.join(missing)} (instale com: pip install -r requirements.txt)",
         )
-    return StepResult(StepStatus.OK, "vosk, sounddevice")
+    return StepResult(StepStatus.OK, "sounddevice, vosk")
+
+
+def check_whisper_dependencies() -> StepResult:
+    """`faster-whisper` disponível? Ausente não é falha — é o caminho de
+    fallback (item 7 da v1.3)."""
+    missing = []
+    for import_name, package_name in _WHISPER_IMPORTS:
+        try:
+            __import__(import_name)
+        except Exception:
+            missing.append(package_name)
+    if missing:
+        return StepResult(StepStatus.MISSING, f"faltando: {', '.join(missing)}")
+    return StepResult(StepStatus.OK, "faster-whisper, numpy")
+
+
+def ensure_whisper_model(
+    manager, *, on_progress=None, allow_download: bool = True
+) -> StepResult:
+    """Garante o modelo do faster-whisper instalado.
+
+    Mesma política do Vosk (item 10): **não baixa de novo** se o modelo já
+    está completo. `WhisperModelManager.is_installed` já é a checagem
+    rigorosa (arquivos obrigatórios + tamanho mínimo), então não há um
+    `is_complete` separado a consultar."""
+    from services.whisper_model_manager import ModelDownloadError as WhisperDownloadError
+
+    if manager.is_installed:
+        size_mb = manager.installed_size_bytes() / 1_000_000
+        return StepResult(
+            StepStatus.ALREADY_PRESENT, f"{manager.model_path.name} ({size_mb:.0f} MB)"
+        )
+
+    if not allow_download:
+        return StepResult(StepStatus.MISSING, "modelo ausente (download não solicitado)")
+
+    try:
+        manager.download_and_install(on_progress=on_progress)
+    except WhisperDownloadError as exc:
+        return StepResult(StepStatus.FAILED, str(exc))
+
+    if not manager.is_installed:
+        return StepResult(
+            StepStatus.FAILED, "o download terminou, mas o modelo não passou na validação"
+        )
+    size_mb = manager.installed_size_bytes() / 1_000_000
+    return StepResult(StepStatus.DOWNLOADED, f"{manager.model_path.name} ({size_mb:.0f} MB)")
+
+
+def build_whisper_manager(settings):
+    """Manager do modelo Whisper apontando para `data/models/whisper/`."""
+    from services.whisper_model_manager import WhisperModelManager
+
+    return WhisperModelManager(
+        models_dir=Path(settings.whisper_models_dir), model_size=settings.whisper_model_size
+    )
 
 
 # --- Modelo de reconhecimento de fala ---------------------------------
@@ -136,27 +195,26 @@ def detect_microphone() -> StepResult:
 
     **Nunca falha o setup**: sem microfone o JARVIS continua utilizável por
     texto, e o HUD já sabe reportar `NO_MICROPHONE` (ver
-    `services/stt_service.py`). Aqui é só informação."""
+    `services/stt_service.py`). Aqui é só informação.
+
+    v1.3 — usa a mesma enumeração do resto do sistema
+    (`services/audio_devices.py`), então o nome que o setup mostra é
+    exatamente o que vai aparecer no seletor do HUD."""
+    from services.audio_devices import default_input_device, list_input_devices
+
     try:
-        import sounddevice as sd
+        import sounddevice  # noqa: F401
     except Exception:
         return StepResult(StepStatus.SKIPPED, "sounddevice não instalado")
 
-    try:
-        device = sd.query_devices(kind="input")
-    except Exception as exc:
-        # Sem placa de som, sem driver, host de áudio indisponível...
-        return StepResult(StepStatus.NOT_DETECTED, f"nenhum dispositivo de entrada ({exc})")
-
-    if not device:
+    devices = list_input_devices()
+    if not devices:
         return StepResult(StepStatus.NOT_DETECTED, "nenhum dispositivo de entrada")
 
-    name = device.get("name", "desconhecido") if isinstance(device, dict) else str(device)
-    rate = device.get("default_samplerate") if isinstance(device, dict) else None
-    # O sample rate real do dispositivo é justamente o que o provider usa
-    # (detecção adaptativa da v0.9) — mostrar aqui ajuda a diagnosticar.
-    detail = f"{name} ({rate:.0f} Hz)" if rate else str(name)
-    return StepResult(StepStatus.DETECTED, detail)
+    default = default_input_device()
+    name = default.name if default is not None else devices[0].name
+    extra = f" (+{len(devices) - 1} outro(s))" if len(devices) > 1 else ""
+    return StepResult(StepStatus.DETECTED, f"{name}{extra}")
 
 
 # --- Relatório --------------------------------------------------------
@@ -168,10 +226,16 @@ class SetupReport:
     dependencies: StepResult
     speech_to_text: StepResult
     microphone: StepResult
+    # v1.3 — engine principal e fallback reportados separadamente.
+    engine: str = "—"
+    fallback: str = "—"
 
     @property
     def succeeded(self) -> bool:
-        """O microfone NUNCA reprova o setup — ver `detect_microphone`."""
+        """O microfone NUNCA reprova o setup — ver `detect_microphone`.
+
+        O engine também não: com o Whisper indisponível mas o Vosk pronto, o
+        STT está funcional, e é `speech_to_text` que carrega esse veredito."""
         return self.launcher.ok and self.dependencies.ok and self.speech_to_text.ok
 
 

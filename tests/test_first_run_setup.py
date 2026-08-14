@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path
 
 from services import vosk_model_manager
+from services.audio_devices import AudioDevice
 from services.first_run_setup import (
     SetupReport,
     StepResult,
@@ -201,22 +202,46 @@ class EnsureModelTests(unittest.TestCase):
                 self.manager.download_and_install()
 
 
+def _fake_device(index: int, name: str, *, default: bool = False) -> AudioDevice:
+    return AudioDevice(
+        index=index,
+        name=name,
+        host_api="MME",
+        max_input_channels=1,
+        default_samplerate=44100,
+        is_system_default=default,
+    )
+
+
 class MicrophoneDetectionTests(unittest.TestCase):
+    """v1.3 — `detect_microphone()` passou a usar a MESMA enumeração do
+    seletor do HUD (`services/audio_devices.py`), então o nome que o setup
+    imprime é exatamente o que o usuário vai ver na lista. Os testes mockam
+    essa enumeração; nenhum microfone real é aberto."""
+
     def test_missing_microphone_never_fails_setup(self) -> None:
-        with unittest.mock.patch("sounddevice.query_devices", side_effect=RuntimeError("sem dispositivo")):
+        with unittest.mock.patch(
+            "services.audio_devices.list_input_devices", return_value=[]
+        ):
             result = detect_microphone()
 
         self.assertEqual(result.status, StepStatus.NOT_DETECTED)
         self.assertTrue(result.ok, "ausência de microfone não pode reprovar o setup")
 
-    def test_detected_microphone_reports_name_and_rate(self) -> None:
-        device = {"name": "Microfone (Teste)", "default_samplerate": 44100.0}
-        with unittest.mock.patch("sounddevice.query_devices", return_value=device):
+    def test_detected_microphone_reports_default_device_name(self) -> None:
+        devices = [_fake_device(0, "Webcam"), _fake_device(1, "Microfone (Teste)", default=True)]
+        with unittest.mock.patch(
+            "services.audio_devices.list_input_devices", return_value=devices
+        ), unittest.mock.patch(
+            "services.audio_devices.default_input_device", return_value=devices[1]
+        ):
             result = detect_microphone()
 
         self.assertEqual(result.status, StepStatus.DETECTED)
         self.assertIn("Microfone (Teste)", result.detail)
-        self.assertIn("44100", result.detail)
+        # O segundo dispositivo é contado, não listado — a linha do setup
+        # precisa caber numa linha.
+        self.assertIn("+1", result.detail)
 
     def test_report_succeeds_even_without_microphone(self) -> None:
         report = SetupReport(

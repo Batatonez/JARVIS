@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Versão de schema que este código espera. Incrementar SEMPRE que uma
 # migração nova for adicionada a `_MIGRATIONS`.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class MigrationError(Exception):
@@ -162,13 +162,170 @@ def _apply_migration_3(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+# --- v4 — v1.3: identidade única, 2FA, sessões com metadata, preferências ---
+#
+# `normalized_username`/`normalized_email` existem como COLUNAS próprias em vez
+# de um índice sobre `LOWER(email)`: com a coluna, `email` volta a guardar o
+# que o usuário digitou (para exibir com a caixa original) e a unicidade passa
+# a ser um dado explícito, indexável e testável. O índice antigo
+# `idx_users_email_unique` é substituído porque o novo é estritamente mais
+# rigoroso — ele pega "DAVI@x.com" vs "davi@x.com", que o antigo deixava passar.
+_MIGRATION_4_DDL = """
+ALTER TABLE users ADD COLUMN normalized_username TEXT;
+ALTER TABLE users ADD COLUMN normalized_email TEXT;
+ALTER TABLE users ADD COLUMN totp_secret TEXT;
+ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN totp_confirmed_at TEXT;
+ALTER TABLE users ADD COLUMN totp_failed_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN totp_lockout_until TEXT;
+
+ALTER TABLE conversations ADD COLUMN manual_title INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE sessions ADD COLUMN last_used_at TEXT;
+ALTER TABLE sessions ADD COLUMN platform TEXT;
+ALTER TABLE sessions ADD COLUMN device_label TEXT;
+
+-- Preferências por conta (ex.: microfone escolhido). Chave/valor de propósito:
+-- evita uma migração nova a cada preferência que o HUD passar a lembrar.
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+
+-- Códigos de recuperação de 2FA. Só o HASH é guardado (mesmo tratamento de
+-- senha); `used_at` implementa o uso único.
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_codes_user ON recovery_codes(user_id);
+
+-- Troca de e-mail em duas fases: o e-mail ATUAL continua valendo até o código
+-- enviado ao NOVO endereço ser confirmado (item 41).
+CREATE TABLE IF NOT EXISTS pending_email_changes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    new_email TEXT NOT NULL,
+    normalized_new_email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    resend_available_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_email_user ON pending_email_changes(user_id);
+"""
+
+_MIGRATION_4_INDEXES = """
+DROP INDEX IF EXISTS idx_users_email_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_normalized_username
+    ON users(normalized_username);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_normalized_email
+    ON users(normalized_email) WHERE normalized_email IS NOT NULL;
+"""
+
+
+class IdentityConflictError(MigrationError):
+    """Duas contas dividem o mesmo e-mail/username (comparação
+    case-insensitive). O item 62 da v1.3 é explícito: **parar e reportar** —
+    nunca apagar conta, nunca fundir contas, nunca reescrever o e-mail de
+    alguém automaticamente para "resolver" o conflito."""
+
+    def __init__(self, kind: str, conflicts: list[tuple[str, int]]) -> None:
+        self.kind = kind
+        self.conflicts = conflicts
+        detail = ", ".join(f"{value!r} ({count} contas)" for value, count in conflicts)
+        super().__init__(
+            f"Não é possível aplicar a unicidade de {kind}: existem duplicatas no banco — {detail}. "
+            "Nenhuma alteração foi feita. Resolva manualmente qual conta fica com cada "
+            f"{kind} antes de atualizar o JARVIS."
+        )
+
+
+def find_identity_conflicts(connection: sqlite3.Connection) -> dict[str, list[tuple[str, int]]]:
+    """Duplicatas case-insensitive de username e e-mail. Somente leitura —
+    pode ser chamada a qualquer momento para diagnóstico."""
+    username_rows = connection.execute(
+        "SELECT LOWER(TRIM(username)) AS value, COUNT(*) AS total FROM users "
+        "GROUP BY value HAVING total > 1"
+    ).fetchall()
+    email_rows = connection.execute(
+        "SELECT LOWER(TRIM(email)) AS value, COUNT(*) AS total FROM users "
+        "WHERE email IS NOT NULL AND TRIM(email) <> '' "
+        "GROUP BY value HAVING total > 1"
+    ).fetchall()
+    return {
+        "username": [(row["value"], row["total"]) for row in username_rows],
+        "email": [(row["value"], row["total"]) for row in email_rows],
+    }
+
+
+def _apply_migration_4(connection: sqlite3.Connection) -> None:
+    existing_users = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+    existing_conversations = {
+        row["name"] for row in connection.execute("PRAGMA table_info(conversations)")
+    }
+    existing_sessions = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
+    already = {
+        "users": existing_users,
+        "conversations": existing_conversations,
+        "sessions": existing_sessions,
+    }
+
+    for statement in _statements(_MIGRATION_4_DDL):
+        upper = statement.upper()
+        if upper.startswith("ALTER TABLE"):
+            parts = statement.split()
+            table, column = parts[2], parts[5]
+            if column in already.get(table, set()):
+                continue
+        connection.execute(statement)
+
+    # Backfill ANTES dos índices: sem isto, todas as linhas ficariam com
+    # `normalized_username` NULL e o índice único não protegeria nada.
+    connection.execute("UPDATE users SET normalized_username = LOWER(TRIM(username))")
+    connection.execute(
+        "UPDATE users SET normalized_email = LOWER(TRIM(email)) "
+        "WHERE email IS NOT NULL AND TRIM(email) <> ''"
+    )
+
+    # Item 62: checar conflitos legados antes de tentar criar o índice. Sem
+    # isto, o SQLite abortaria a migração com um "UNIQUE constraint failed"
+    # cru, sem dizer QUAL e-mail está duplicado nem o que fazer a respeito.
+    conflicts = find_identity_conflicts(connection)
+    if conflicts["username"]:
+        raise IdentityConflictError("username", conflicts["username"])
+    if conflicts["email"]:
+        raise IdentityConflictError("e-mail", conflicts["email"])
+
+    for statement in _statements(_MIGRATION_4_INDEXES):
+        connection.execute(statement)
+
+
 def _statements(script: str) -> list[str]:
-    """Divide um script DDL em statements. Deliberadamente ingênuo (split em
-    `;`) — só é seguro porque estes scripts não têm literal de string nem
-    trigger com `;` embutido. NÃO usamos `executescript()`: ele emite um
-    COMMIT implícito antes de rodar, o que destruiria a transação explícita
-    de `migrate()` e, com ela, a garantia de rollback."""
-    return [s.strip() for s in script.strip().split(";") if s.strip()]
+    """Divide um script DDL em statements.
+
+    NÃO usamos `executescript()`: ele emite um COMMIT implícito antes de
+    rodar, o que destruiria a transação explícita de `migrate()` e, com ela,
+    a garantia de rollback.
+
+    **Comentários são removidos antes do split** (v1.3). A versão anterior
+    fazia `split(";")` no texto cru, então um `;` dentro de um comentário
+    `--` partia o script no meio e produzia um "statement" que era o resto da
+    frase em português — erro de sintaxe do SQLite em tempo de migração,
+    descoberto exatamente assim. Continua sem suporte a `;` dentro de literal
+    de string ou corpo de trigger, o que estes scripts não usam."""
+    without_comments = "\n".join(
+        line.split("--", 1)[0] if "--" in line else line for line in script.splitlines()
+    )
+    return [s.strip() for s in without_comments.strip().split(";") if s.strip()]
 
 
 def _apply_migration_1(connection: sqlite3.Connection) -> None:
@@ -195,6 +352,7 @@ _MIGRATIONS = (
     _apply_migration_1,
     _apply_migration_2,
     _apply_migration_3,
+    _apply_migration_4,
 )
 
 
@@ -231,6 +389,14 @@ def migrate(connection: sqlite3.Connection) -> int:
                 # um int de um contador interno, nunca entrada do usuário.
                 connection.execute(f"PRAGMA user_version = {int(target)}")
                 connection.execute("COMMIT")
+            except IdentityConflictError:
+                # Repassado INTACTO: a mensagem diz qual e-mail/username está
+                # duplicado e o que fazer a respeito (item 62 da v1.3).
+                # Envolvê-la no erro genérico apagaria justamente a parte
+                # acionável e deixaria o usuário sem saber o que resolver.
+                connection.execute("ROLLBACK")
+                logger.warning("Migração abortada por conflito de identidade; banco preservado.")
+                raise
             except Exception as exc:
                 connection.execute("ROLLBACK")
                 logger.exception("Falha ao migrar o banco para a versão %s; alterações revertidas.", target)

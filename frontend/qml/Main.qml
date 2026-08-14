@@ -33,6 +33,16 @@ Window {
     property bool accountPanelOpen: false
     property bool voiceSetupOpen: false
     property bool emailVerificationOpen: false
+
+    // --- v1.3 ---
+    property bool voiceInputOpen: false
+    property bool accountSettingsOpen: false
+    // Texto do "Test Microphone": vive só aqui, nunca vira mensagem do chat
+    // nem é enviado à IA (item 16).
+    property string microphoneHeardText: ""
+    property string accountErrorText: ""
+    property string accountSuccessText: ""
+    property string twoFactorErrorText: ""
     property string sidebarSearchQuery: ""
     readonly property var sidebarConversations: sidebarSearchQuery.length > 0
         ? bridge.searchConversations(sidebarSearchQuery)
@@ -64,6 +74,32 @@ Window {
         target: bridge
         function onCanCloseChanged() {
             if (bridge.canClose) window.close()
+        }
+
+        // --- v1.3 ---
+        function onMicrophoneTestFinished(text) {
+            // Só exibe no painel de voz. NÃO entra no chat, NÃO vai para a IA.
+            window.microphoneHeardText = text
+        }
+        function onAccountErrorRaised(message) {
+            // O erro do 2FA aparece na própria tela de ativação quando ela
+            // está aberta; nas demais, na faixa de mensagens da tela de conta.
+            if (bridge.twoFactorEnrollment) {
+                window.twoFactorErrorText = message
+            } else {
+                window.accountErrorText = message
+                window.accountSuccessText = ""
+            }
+        }
+        function onAccountUpdated(message) {
+            window.accountSuccessText = message
+            window.accountErrorText = ""
+            window.twoFactorErrorText = ""
+        }
+        function onAccountDeleted() {
+            window.accountSettingsOpen = false
+            window.accountErrorText = ""
+            window.accountSuccessText = ""
         }
     }
 
@@ -180,6 +216,7 @@ Window {
                 onNewConversationRequested: bridge.startNewConversation()
                 onConversationSelected: (conversationId) => bridge.openConversation(conversationId)
                 onDeleteRequested: (conversationId) => bridge.deleteConversation(conversationId)
+                onRenameRequested: (conversationId, newTitle) => bridge.renameConversation(conversationId, newTitle)
                 onSearchTextChanged: (query) => window.sidebarSearchQuery = query
                 onAccountClicked: window.accountPanelOpen = true
                 onToggleRequested: window.sidebarExpanded = !window.sidebarExpanded
@@ -430,7 +467,14 @@ Window {
             inputBar.insertTranscription(text)
         }
         function onAuthErrorRaised(message) {
-            authScreen.errorMessage = message
+            // Com o desafio de segundo fator aberto, o erro é DELE (código
+            // errado / rate limit) — mostrar na tela de login por baixo
+            // deixaria a mensagem escondida atrás do overlay.
+            if (bridge.awaitingTwoFactor) {
+                window.twoFactorErrorText = message
+            } else {
+                authScreen.errorMessage = message
+            }
         }
         function onVoiceModelInstalledChanged() {
             if (bridge.voiceModelInstalled) window.voiceSetupOpen = false
@@ -541,6 +585,122 @@ Window {
             // cooldown é responsabilidade do backend, mas evitar a chamada
             // inútil aqui poupa um erro visível ao usuário.
             if (bridge.verificationSecondsUntilExpiry <= 0) bridge.requestVerificationCode()
+        }
+        onSettingsRequested: {
+            window.accountPanelOpen = false
+            window.accountSettingsOpen = true
+            bridge.refreshTwoFactorStatus()
+            bridge.refreshSessions()
+        }
+        onVoiceSettingsRequested: {
+            window.accountPanelOpen = false
+            window.voiceInputOpen = true
+            bridge.refreshAudioDevices()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Overlays da v1.3. Todos seguem a mesma regra: o QML só reflete o que o
+    // Bridge publica e devolve a intenção do usuário — nenhuma decisão de
+    // segurança acontece aqui (item 60).
+    // ------------------------------------------------------------------
+
+    VoiceInputOverlay {
+        objectName: "voiceInputOverlay"
+        anchors.fill: parent
+        z: 100
+        open: window.voiceInputOpen
+        devices: bridge.audioDevices
+        selectedKey: bridge.selectedMicrophoneKey
+        fellBack: bridge.microphoneFellBack
+        engineName: bridge.sttEngine
+        sttStatus: bridge.sttStatus
+        level: bridge.voiceLevel
+        testActive: bridge.microphoneTestActive
+        heardText: window.microphoneHeardText
+        onDeviceSelected: (key) => bridge.selectMicrophone(key)
+        onRefreshRequested: bridge.refreshAudioDevices()
+        onTestRequested: {
+            window.microphoneHeardText = ""
+            bridge.testMicrophone()
+        }
+        onCloseRequested: {
+            window.voiceInputOpen = false
+            window.microphoneHeardText = ""
+        }
+    }
+
+    AccountSettingsOverlay {
+        id: accountSettings
+        objectName: "accountSettingsOverlay"
+        anchors.fill: parent
+        z: 100
+        open: window.accountSettingsOpen
+        user: bridge.currentUser
+        reauthValid: bridge.reauthValid
+        twoFactor: bridge.twoFactorStatus
+        sessions: bridge.activeSessions
+        pendingEmailChange: bridge.pendingEmailChange
+        errorText: window.accountErrorText
+        successText: window.accountSuccessText
+        onConfirmPasswordRequested: (password) => bridge.confirmPassword(password)
+        onDisplayNameChangeRequested: (name) => bridge.changeDisplayName(name)
+        onUsernameChangeRequested: (username) => bridge.changeUsername(username)
+        onPasswordChangeRequested: (current, next, confirm) => bridge.changePassword(current, next, confirm)
+        onEmailChangeRequested: (email) => bridge.requestEmailChange(email)
+        onEmailChangeConfirmRequested: (code) => bridge.confirmEmailChange(code)
+        onTwoFactorEnrollmentRequested: bridge.startTwoFactorEnrollment()
+        onTwoFactorDisableRequested: (code) => bridge.disableTwoFactor(code)
+        onRecoveryRegenerateRequested: (code) => bridge.regenerateRecoveryCodes(code)
+        onSessionsRefreshRequested: bridge.refreshSessions()
+        onLogOutOthersRequested: bridge.logOutOtherSessions()
+        onDeleteAccountRequested: (password, confirmation, code) => bridge.deleteAccount(password, confirmation, code)
+        onCloseRequested: {
+            window.accountSettingsOpen = false
+            window.accountErrorText = ""
+            window.accountSuccessText = ""
+        }
+    }
+
+    TwoFactorSetupOverlay {
+        objectName: "twoFactorSetupOverlay"
+        anchors.fill: parent
+        z: 101
+        open: !!bridge.twoFactorEnrollment
+        enrollment: bridge.twoFactorEnrollment
+        errorText: window.twoFactorErrorText
+        onConfirmRequested: (code) => {
+            window.twoFactorErrorText = ""
+            bridge.confirmTwoFactorEnrollment(code)
+        }
+        onCancelRequested: {
+            window.twoFactorErrorText = ""
+            bridge.cancelTwoFactorEnrollment()
+        }
+    }
+
+    RecoveryCodesOverlay {
+        objectName: "recoveryCodesOverlay"
+        anchors.fill: parent
+        z: 102
+        open: !!(bridge.recoveryCodes && bridge.recoveryCodes.length > 0)
+        codes: bridge.recoveryCodes
+        onCloseRequested: bridge.clearRecoveryCodes()
+    }
+
+    TwoFactorChallengeOverlay {
+        objectName: "twoFactorChallengeOverlay"
+        anchors.fill: parent
+        z: 103
+        open: bridge.awaitingTwoFactor
+        errorText: window.twoFactorErrorText
+        onSubmitCode: (code) => {
+            window.twoFactorErrorText = ""
+            bridge.submitTwoFactorCode(code)
+        }
+        onCancelRequested: {
+            window.twoFactorErrorText = ""
+            bridge.cancelTwoFactor()
         }
     }
 

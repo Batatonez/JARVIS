@@ -265,7 +265,7 @@ class MemoryAcrossChatsTests(unittest.IsolatedAsyncioTestCase):
         fake_ai = FakeAIService(available=True, reply="ok")
         second = self._account(settings, ai=fake_ai)
         try:
-            await second.login(username="alice", password="senha-forte-123")
+            await second.login(identifier="alice", password="senha-forte-123")
             self.assertTrue(second.list_memories())
 
             await second.start_new_conversation()

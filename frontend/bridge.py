@@ -31,11 +31,12 @@ from app.account_manager import (
     AccountManager,
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
+    TwoFactorRequiredError,
     UsernameAlreadyExistsError,
 )
 from services.email_verification_service import mask_email
 from app.models import AppErrorCode, AppEvent, ResponseStatus, RiskLevel
-from frontend.message_model import MessageListModel
+from frontend.message_model import MessageListModel, to_local_display_time
 from services.stt_service import create_stt_service
 from services.vosk_model_manager import ModelDownloadCancelled, ModelDownloadError, VoiceModelManager
 
@@ -75,7 +76,9 @@ _MESSAGE_EVENTS = frozenset(
     }
 )
 # Eventos que podem ter criado/atualizado uma conversa persistida (sidebar).
-_CONVERSATION_LIST_EVENTS = _MESSAGE_EVENTS
+# `conversation.retitled` (v1.3) entra aqui: o título automático mudou o nome
+# na sidebar sem que nenhuma mensagem nova tenha chegado.
+_CONVERSATION_LIST_EVENTS = _MESSAGE_EVENTS | {"conversation.retitled"}
 
 
 class JarvisBridge(QObject):
@@ -109,6 +112,24 @@ class JarvisBridge(QObject):
     verificationStateChanged = Signal()
     verificationErrorRaised = Signal(str)
     verificationSucceeded = Signal()
+
+    # --- Conta, 2FA e sessões (v1.3) ---
+    awaitingTwoFactorChanged = Signal()
+    accountErrorRaised = Signal(str)
+    accountUpdated = Signal(str)  # mensagem curta de sucesso para o HUD
+    reauthStateChanged = Signal()
+    twoFactorStatusChanged = Signal()
+    twoFactorEnrollmentReady = Signal()
+    recoveryCodesReady = Signal()
+    sessionsChanged = Signal()
+    emailChangeStateChanged = Signal()
+    accountDeleted = Signal()
+
+    # --- Voz: dispositivos e teste de microfone (v1.3) ---
+    audioDevicesChanged = Signal()
+    microphoneTestFinished = Signal(str)
+    microphoneTestActiveChanged = Signal()
+    sttEngineChanged = Signal()
 
     # --- Voice Model Manager (v0.9 — global, não por usuário) ---
     voiceModelInstalledChanged = Signal()
@@ -155,6 +176,28 @@ class JarvisBridge(QObject):
         self._microphone_available = False
         self._stt_ready = False
         self._stt_status = "unavailable"
+
+        # --- v1.3 ---
+        self._awaiting_two_factor = False
+        self._two_factor_status: dict = {
+            "enabled": False,
+            "enrollmentPending": False,
+            "recoveryCodesRemaining": 0,
+            "secretProtected": False,
+            "lockoutSeconds": 0,
+        }
+        # Material de ativação do 2FA e códigos de recuperação vivem só em RAM
+        # e só enquanto a tela está aberta — nunca são persistidos aqui nem
+        # emitidos como evento da Application Layer.
+        self._two_factor_enrollment: dict | None = None
+        self._recovery_codes: list[str] = []
+        self._sessions: list[dict] = []
+        self._email_change: dict | None = None
+        self._audio_devices: list[dict] = []
+        self._selected_microphone_key = ""
+        self._microphone_fell_back = False
+        self._microphone_test_active = False
+        self._stt_engine = "—"
 
         # Verificação de e-mail (v1.0) — os segundos vêm de timestamps reais
         # do banco, nunca de um timer que começa quando a tela abre.
@@ -205,6 +248,12 @@ class JarvisBridge(QObject):
         self._sync_messages()
         self._refresh_conversations()
         self._refresh_verification_state()
+        # v1.3 — estado de conta e voz da sessão recém-aberta.
+        self._refresh_two_factor_status()
+        self._refresh_sessions()
+        self._refresh_email_change_state()
+        self._apply_preferred_microphone()
+        self._refresh_audio_devices()
 
     async def _leave_session(self) -> None:
         if self._event_task is not None:
@@ -334,6 +383,9 @@ class JarvisBridge(QObject):
             "email": user.email or "",
             "maskedEmail": mask_email(user.email) if user.email else "",
             "emailVerified": user.email_verified,
+            # v1.3 — só o FATO de o 2FA estar ligado. O segredo TOTP nunca
+            # sai de `services/user_repository.py`.
+            "twoFactorEnabled": user.totp_enabled,
         }
 
     def _refresh_verification_state(self) -> None:
@@ -384,6 +436,287 @@ class JarvisBridge(QObject):
     @Property(str, notify=currentConversationIdChanged)
     def currentConversationId(self) -> str:
         return self._account.current_conversation_id or ""
+
+    # ------------------------------------------------------------------
+    # Properties/Slots — conta, 2FA e sessões (v1.3)
+    #
+    # O QML NUNCA decide nada aqui (item 60): não escolhe `user_id`, não sabe
+    # se o 2FA está válido, não julga se a reautenticação expirou. Toda
+    # property abaixo é um espelho somente-leitura de uma decisão que o
+    # backend já tomou, e todo Slot devolve o resultado do backend.
+    # ------------------------------------------------------------------
+
+    @Property(bool, notify=awaitingTwoFactorChanged)
+    def awaitingTwoFactor(self) -> bool:
+        """`True` entre "senha aceita" e "segundo fator confirmado". Enquanto
+        for `True` não existe sessão nenhuma criada."""
+        return self._awaiting_two_factor
+
+    @Property(bool, notify=reauthStateChanged)
+    def reauthValid(self) -> bool:
+        return self._account.reauth_valid()
+
+    @Property("QVariant", notify=twoFactorStatusChanged)
+    def twoFactorStatus(self):
+        return self._two_factor_status
+
+    @Property("QVariant", notify=twoFactorEnrollmentReady)
+    def twoFactorEnrollment(self):
+        """Segredo, URI e matriz do QR — só existe enquanto a tela de
+        ativação está aberta, e some assim que ela fecha."""
+        return self._two_factor_enrollment
+
+    @Property("QVariant", notify=recoveryCodesReady)
+    def recoveryCodes(self):
+        return self._recovery_codes
+
+    @Property("QVariant", notify=sessionsChanged)
+    def activeSessions(self):
+        return self._sessions
+
+    @Property("QVariant", notify=emailChangeStateChanged)
+    def pendingEmailChange(self):
+        return self._email_change
+
+    @Slot(str)
+    def confirmPassword(self, password: str) -> None:
+        """Abre a janela de reautenticação recente (item 45)."""
+        error = self._account.confirm_password(password)
+        self.reauthStateChanged.emit()
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self.accountUpdated.emit("Senha confirmada.")
+
+    @Slot(str)
+    def changeDisplayName(self, display_name: str) -> None:
+        user, error = self._account.change_display_name(display_name)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._current_user = self._user_to_dict(user)
+        self.currentUserChanged.emit()
+        self.accountUpdated.emit("Nome atualizado.")
+
+    @Slot(str)
+    def changeUsername(self, username: str) -> None:
+        user, error = self._account.change_username(username)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._current_user = self._user_to_dict(user)
+        self.currentUserChanged.emit()
+        self.accountUpdated.emit("Username atualizado.")
+
+    @Slot(str, str, str)
+    def changePassword(self, current_password: str, new_password: str, confirm_password: str) -> None:
+        revoked, error = self._account.change_password(
+            current_password=current_password,
+            new_password=new_password,
+            confirm_password=confirm_password,
+        )
+        self.reauthStateChanged.emit()
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._refresh_sessions()
+        message = "Senha alterada."
+        if revoked:
+            message += f" {revoked} outra(s) sessão(ões) foram encerradas."
+        self.accountUpdated.emit(message)
+
+    # --- Troca de e-mail ---
+
+    @Slot(str)
+    def requestEmailChange(self, new_email: str) -> None:
+        asyncio.ensure_future(self._request_email_change(new_email))
+
+    async def _request_email_change(self, new_email: str) -> None:
+        result = await self._account.request_email_change(new_email)
+        self._refresh_email_change_state()
+        if result.error is not None:
+            self.accountErrorRaised.emit(result.error.message)
+            return
+        self.accountUpdated.emit("Código enviado ao novo e-mail.")
+
+    @Slot(str)
+    def confirmEmailChange(self, code: str) -> None:
+        asyncio.ensure_future(self._confirm_email_change(code))
+
+    async def _confirm_email_change(self, code: str) -> None:
+        error = await self._account.confirm_email_change(code)
+        self._refresh_email_change_state()
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._current_user = self._user_to_dict(self._account.current_user)
+        self.currentUserChanged.emit()
+        self.accountUpdated.emit("E-mail alterado.")
+
+    def _refresh_email_change_state(self) -> None:
+        pending = self._account.active_email_change()
+        self._email_change = (
+            None
+            if pending is None
+            else {
+                "maskedEmail": pending.masked_email,
+                "secondsUntilExpiry": pending.seconds_until_expiry(),
+                "secondsUntilResend": pending.seconds_until_resend(),
+                "attempts": pending.attempts,
+            }
+        )
+        self.emailChangeStateChanged.emit()
+
+    # --- 2FA ---
+
+    @Slot()
+    def refreshTwoFactorStatus(self) -> None:
+        self._refresh_two_factor_status()
+
+    def _refresh_two_factor_status(self) -> None:
+        status = self._account.two_factor_status()
+        self._two_factor_status = {
+            "enabled": bool(status and status.enabled),
+            "enrollmentPending": bool(status and status.enrollment_pending),
+            "recoveryCodesRemaining": status.recovery_codes_remaining if status else 0,
+            "secretProtected": bool(status and status.secret_protected),
+            "lockoutSeconds": status.lockout_seconds if status else 0,
+        }
+        self.twoFactorStatusChanged.emit()
+
+    @Slot()
+    def startTwoFactorEnrollment(self) -> None:
+        enrollment, error = self._account.start_two_factor_enrollment()
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._two_factor_enrollment = {
+            # `secret` vai para a UI porque o usuário precisa poder digitar a
+            # chave à mão quando não consegue escanear o QR (item 47). Ele
+            # nunca é logado, persistido em claro, nem enviado a provider.
+            "secret": enrollment.formatted_secret,
+            "qr": enrollment.qr_matrix,
+            "secretProtected": enrollment.secret_protected,
+        }
+        self.twoFactorEnrollmentReady.emit()
+        self._refresh_two_factor_status()
+
+    @Slot(str)
+    def confirmTwoFactorEnrollment(self, code: str) -> None:
+        codes, error = self._account.confirm_two_factor_enrollment(code)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        # O material de ativação some da RAM assim que o 2FA fica ativo.
+        self._two_factor_enrollment = None
+        self.twoFactorEnrollmentReady.emit()
+        self._recovery_codes = codes or []
+        self.recoveryCodesReady.emit()
+        self._current_user = self._user_to_dict(self._account.current_user)
+        self.currentUserChanged.emit()
+        self._refresh_two_factor_status()
+        self.accountUpdated.emit("Verificação em duas etapas ativada.")
+
+    @Slot(str)
+    def regenerateRecoveryCodes(self, code: str) -> None:
+        codes, error = self._account.regenerate_recovery_codes(code)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._recovery_codes = codes or []
+        self.recoveryCodesReady.emit()
+        self._refresh_two_factor_status()
+        self.accountUpdated.emit("Novos códigos de recuperação gerados.")
+
+    @Slot(str)
+    def disableTwoFactor(self, code: str) -> None:
+        error = self._account.disable_two_factor(code)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._recovery_codes = []
+        self.recoveryCodesReady.emit()
+        self._current_user = self._user_to_dict(self._account.current_user)
+        self.currentUserChanged.emit()
+        self._refresh_two_factor_status()
+        self.accountUpdated.emit("Verificação em duas etapas desativada.")
+
+    @Slot()
+    def cancelTwoFactorEnrollment(self) -> None:
+        """Usuário fechou a tela de ativação sem confirmar. Descarta o
+        segredo gerado — `TwoFactorService.cancel_enrollment` só age quando o
+        2FA NÃO está ativo, então isto nunca vira um caminho para desligar o
+        2FA sem segundo fator."""
+        user = self._account.current_user
+        if user is not None:
+            self._account.two_factor.cancel_enrollment(user.id)
+        self._two_factor_enrollment = None
+        self.twoFactorEnrollmentReady.emit()
+        self._refresh_two_factor_status()
+
+    @Slot()
+    def clearRecoveryCodes(self) -> None:
+        """Chamado quando o usuário fecha a tela que mostrou os códigos —
+        eles não devem continuar acessíveis ao QML depois disso."""
+        self._recovery_codes = []
+        self.recoveryCodesReady.emit()
+
+    # --- Sessões ---
+
+    @Slot()
+    def refreshSessions(self) -> None:
+        self._refresh_sessions()
+
+    def _refresh_sessions(self) -> None:
+        self._sessions = [
+            {
+                "id": session.session_id,
+                "device": session.device_label,
+                "platform": session.platform,
+                "createdAt": to_local_display_time(session.created_at),
+                "lastUsedAt": (
+                    to_local_display_time(session.last_used_at) if session.last_used_at else ""
+                ),
+                "isCurrent": session.is_current,
+            }
+            for session in self._account.list_sessions()
+        ]
+        self.sessionsChanged.emit()
+
+    @Slot()
+    def logOutOtherSessions(self) -> None:
+        revoked, error = self._account.log_out_other_sessions()
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        self._refresh_sessions()
+        self.accountUpdated.emit(f"{revoked} outra(s) sessão(ões) encerrada(s).")
+
+    # --- Exclusão da conta ---
+
+    @Slot(str, str, str)
+    def deleteAccount(self, password: str, confirmation: str, two_factor_code: str) -> None:
+        asyncio.ensure_future(self._delete_account(password, confirmation, two_factor_code))
+
+    async def _delete_account(self, password: str, confirmation: str, two_factor_code: str) -> None:
+        error = await self._account.delete_current_account(
+            password=password, confirmation=confirmation, two_factor_code=two_factor_code
+        )
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        # A conta não existe mais: o Bridge volta ao estado de "ninguém
+        # logado", igual a um logout, mas sem sessão para invalidar.
+        await self._leave_session()
+        self._current_user = None
+        self.currentUserChanged.emit()
+        self._conversations = []
+        self.conversationsChanged.emit()
+        self._message_model.sync([])
+        self._sessions = []
+        self.sessionsChanged.emit()
+        self._set_property("_authenticated", False, self.authenticatedChanged)
+        self.accountDeleted.emit()
 
     # ------------------------------------------------------------------
     # Properties/Slots — verificação de e-mail (v1.0)
@@ -462,12 +795,19 @@ class JarvisBridge(QObject):
         asyncio.ensure_future(self._request_verification(force=True))
 
     @Slot(str, str)
-    def login(self, username: str, password: str) -> None:
-        asyncio.ensure_future(self._login(username, password))
+    def login(self, identifier: str, password: str) -> None:
+        """`identifier` é username OU e-mail (item 38 da v1.3) — o campo do
+        HUD virou "USERNAME OR EMAIL" e quem resolve é o backend."""
+        asyncio.ensure_future(self._login(identifier, password))
 
-    async def _login(self, username: str, password: str) -> None:
+    async def _login(self, identifier: str, password: str) -> None:
         try:
-            user = await self._account.login(username=username, password=password)
+            user = await self._account.login(identifier=identifier, password=password)
+        except TwoFactorRequiredError:
+            # A senha bateu, mas nenhuma sessão existe ainda: o HUD abre a
+            # tela do segundo fator (item 52).
+            self._set_property("_awaiting_two_factor", True, self.awaitingTwoFactorChanged)
+            return
         except (InvalidCredentialsError, AccountLockedError) as exc:
             # `AccountLockedError` já traz "tente novamente em Ns" — é a única
             # mensagem de login que difere, e de propósito: sem ela o usuário
@@ -479,6 +819,24 @@ class JarvisBridge(QObject):
             self.authErrorRaised.emit("Não foi possível entrar. Tente novamente.")
             return
         await self._enter_session(user)
+
+    @Slot(str)
+    def submitTwoFactorCode(self, code: str) -> None:
+        asyncio.ensure_future(self._submit_two_factor(code))
+
+    async def _submit_two_factor(self, code: str) -> None:
+        user, error = await self._account.complete_two_factor(code)
+        if error is not None:
+            self.authErrorRaised.emit(error.message)
+            return
+        self._set_property("_awaiting_two_factor", False, self.awaitingTwoFactorChanged)
+        if user is not None:
+            await self._enter_session(user)
+
+    @Slot()
+    def cancelTwoFactor(self) -> None:
+        self._account.cancel_two_factor()
+        self._set_property("_awaiting_two_factor", False, self.awaitingTwoFactorChanged)
 
     @Slot()
     def logout(self) -> None:
@@ -575,6 +933,136 @@ class JarvisBridge(QObject):
     @Property(QObject, constant=True)
     def messages(self) -> MessageListModel:
         return self._message_model
+
+    # ------------------------------------------------------------------
+    # Properties/Slots — dispositivo de entrada e teste de microfone (v1.3)
+    # ------------------------------------------------------------------
+
+    @Property(str, notify=sttEngineChanged)
+    def sttEngine(self) -> str:
+        """Nome legível do engine em uso ("Faster Whisper" / "Vosk" / "—").
+        Saber que caiu no fallback é informação legítima para o usuário."""
+        return self._stt_engine
+
+    @Property("QVariant", notify=audioDevicesChanged)
+    def audioDevices(self):
+        return self._audio_devices
+
+    @Property(str, notify=audioDevicesChanged)
+    def selectedMicrophoneKey(self) -> str:
+        return self._selected_microphone_key
+
+    @Property(bool, notify=audioDevicesChanged)
+    def microphoneFellBack(self) -> bool:
+        """`True` quando o microfone salvo sumiu e o sistema caiu no padrão —
+        o HUD avisa discretamente em vez de trocar em silêncio (item 14)."""
+        return self._microphone_fell_back
+
+    @Property(bool, notify=microphoneTestActiveChanged)
+    def microphoneTestActive(self) -> bool:
+        return self._microphone_test_active
+
+    @Slot()
+    def refreshAudioDevices(self) -> None:
+        """"REFRESH DEVICES" (item 15) — re-enumera para pegar um microfone
+        conectado depois que o app já estava aberto."""
+        stt = self._stt()
+        if stt is not None:
+            stt.refresh_devices()
+        self._refresh_audio_devices()
+
+    @Slot(str)
+    def selectMicrophone(self, device_key: str) -> None:
+        """Troca o dispositivo e PERSISTE a escolha por conta. Guardamos a
+        chave estável (host API + nome), nunca o índice."""
+        stt = self._stt()
+        if stt is None:
+            self.voiceErrorRaised.emit("Reconhecimento de fala não está disponível.")
+            return
+        if not stt.select_device(device_key or None):
+            self.voiceErrorRaised.emit("Não foi possível usar esse microfone.")
+            self._refresh_audio_devices()
+            return
+        self._account.set_preferred_microphone(device_key or None)
+        self._refresh_audio_devices()
+        self._refresh_status()
+
+    @Slot()
+    def testMicrophone(self) -> None:
+        """"TEST MICROPHONE" (item 16): grava alguns segundos, mostra o nível
+        e transcreve. O texto vai para `microphoneTestFinished` — **nunca**
+        para a IA e **nunca** vira mensagem do chat."""
+        if self._microphone_test_active:
+            return
+        asyncio.ensure_future(self._test_microphone())
+
+    async def _test_microphone(self) -> None:
+        stt = self._stt()
+        if stt is None or not stt.microphone_available:
+            self.voiceErrorRaised.emit("Nenhum microfone disponível.")
+            return
+
+        self._set_property("_microphone_test_active", True, self.microphoneTestActiveChanged)
+        try:
+            # `auto_stop=True`: o VAD encerra sozinho depois do silêncio final,
+            # então o teste não depende de o usuário clicar de novo.
+            await stt.start_listening(on_level=self._on_test_level, auto_stop=True)
+            while getattr(stt, "listening", False):
+                await asyncio.sleep(0.1)
+            text = await stt.stop_and_transcribe()
+        except Exception as exc:
+            logger.info("Falha no teste de microfone: %s", exc)
+            self.voiceErrorRaised.emit("Não foi possível testar o microfone.")
+            return
+        finally:
+            self._set_property("_microphone_test_active", False, self.microphoneTestActiveChanged)
+            self._set_property("_voice_level", 0.0, self.voiceLevelChanged)
+
+        self.microphoneTestFinished.emit(text or "")
+
+    def _on_test_level(self, level: float) -> None:
+        """Medidor de nível durante o teste. Reusa a MESMA property que o
+        push-to-talk já alimenta — nenhum polling novo, nenhum timer extra
+        (item 17)."""
+        self._set_property("_voice_level", float(level), self.voiceLevelChanged)
+
+    def _stt(self):
+        """O `SpeechToTextService` da sessão atual, ou `None` quando não há
+        sessão/voz. Sempre lido na hora — a sessão troca a cada login."""
+        app = self._app
+        voice = getattr(app, "voice", None) if app is not None else None
+        return getattr(voice, "stt", None) if voice is not None else None
+
+    def _apply_preferred_microphone(self) -> None:
+        """Aplica o microfone salvo da conta ao abrir a sessão."""
+        stt = self._stt()
+        if stt is None:
+            return
+        preferred = self._account.preferred_microphone_key()
+        if preferred:
+            stt.select_device(preferred)
+
+    def _refresh_audio_devices(self) -> None:
+        stt = self._stt()
+        devices = stt.available_devices() if stt is not None else []
+        current = stt.current_device if stt is not None else None
+        self._audio_devices = [
+            {
+                "key": device.key,
+                "label": device.label,
+                "hostApi": device.host_api,
+                "isSystemDefault": device.is_system_default,
+                "isCurrent": bool(current is not None and current.key == device.key),
+            }
+            for device in devices
+        ]
+        self._selected_microphone_key = current.key if current is not None else ""
+        self._microphone_fell_back = bool(stt is not None and stt.device_fell_back)
+        engine = getattr(stt, "engine", None)
+        self._set_property(
+            "_stt_engine", engine.label if engine is not None else "—", self.sttEngineChanged
+        )
+        self.audioDevicesChanged.emit()
 
     # ------------------------------------------------------------------
     # Properties/Slots — Voice Model Manager (v0.9)

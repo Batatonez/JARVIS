@@ -111,33 +111,76 @@ def _progress_printer():
     return _on_progress
 
 
-def _setup_speech_to_text() -> "StepResult":
+def _setup_speech_to_text() -> tuple["StepResult", str, str]:
+    """Prepara os DOIS engines (v1.3) e devolve
+    `(resultado, engine_principal, fallback)`.
+
+    Política do item 7/10: o faster-whisper é o principal e o Vosk é o
+    fallback leve. O STT conta como pronto se **pelo menos um** estiver
+    utilizável — uma máquina sem espaço para o Whisper continua com voz
+    funcionando pelo Vosk. Modelo já instalado e válido nunca é rebaixado."""
     from config.settings import settings
     from services.first_run_setup import (
         StepResult,
         StepStatus,
         build_model_manager,
+        build_whisper_manager,
+        check_whisper_dependencies,
         ensure_stt_model,
+        ensure_whisper_model,
     )
     from services.vosk_model_manager import VoiceModelManager
 
-    manager = build_model_manager(settings)
+    engine = "—"
+    fallback = "—"
 
-    if manager.is_complete:
-        print("[3/4] Modelo de reconhecimento de fala: já instalado.")
-        return ensure_stt_model(manager, allow_download=False)
+    # --- Engine principal: faster-whisper ---
+    whisper_result = None
+    whisper_dependencies = check_whisper_dependencies()
+    if whisper_dependencies.ok:
+        whisper = build_whisper_manager(settings)
+        if whisper.is_installed:
+            print("[3/4] Modelo do Faster Whisper: já instalado.")
+            whisper_result = ensure_whisper_model(whisper, allow_download=False)
+        else:
+            info = whisper.info()
+            approximate_mb = info.approximate_size_bytes / 1_000_000
+            print("[3/4] Speech-to-text model not found (Faster Whisper).")
+            print(f"      Baixando o modelo '{info.size}' (~{approximate_mb:.0f} MB)...")
+            print(f"      Idioma: {info.language} | Licença: {info.license}")
+            print(f"      Origem: {info.source}")
+            print(f"      Destino: {whisper.model_path}")
+            whisper_result = ensure_whisper_model(whisper, on_progress=_progress_printer())
+            print()  # fecha a linha da barra de progresso
+        if whisper_result.ok:
+            engine = "Faster Whisper"
+    else:
+        print(f"[3/4] Faster Whisper indisponível ({whisper_dependencies.detail}).")
+        print("      O JARVIS vai usar o Vosk como engine de voz.")
 
-    info = VoiceModelManager.info()
-    approximate_mb = info.approximate_size_bytes / 1_000_000
-    print("[3/4] Speech-to-text model not found.")
-    print(f"      Downloading JARVIS speech recognition model (~{approximate_mb:.0f} MB)...")
-    print(f"      Idioma: {info.language} | Licença: {info.license}")
-    print(f"      Origem: {info.source}")
-    print(f"      Destino: {manager.model_path}")
+    # --- Fallback: Vosk ---
+    vosk_manager = build_model_manager(settings)
+    if vosk_manager.is_complete:
+        print("      Modelo Vosk (fallback): já instalado.")
+        vosk_result = ensure_stt_model(vosk_manager, allow_download=False)
+    else:
+        info = VoiceModelManager.info()
+        print(f"      Baixando o modelo Vosk de fallback (~{info.approximate_size_bytes / 1_000_000:.0f} MB)...")
+        vosk_result = ensure_stt_model(vosk_manager, on_progress=_progress_printer())
+        print()
+    if vosk_result.ok:
+        fallback = "Vosk"
+        if engine == "—":
+            engine = "Vosk"
+            fallback = "—"
 
-    result = ensure_stt_model(manager, on_progress=_progress_printer())
-    print()  # fecha a linha da barra de progresso
-    return result
+    # Pronto se qualquer um dos dois funciona.
+    if whisper_result is not None and whisper_result.ok:
+        return whisper_result, engine, fallback
+    if vosk_result.ok:
+        return vosk_result, engine, fallback
+    detail = whisper_result.detail if whisper_result is not None else vosk_result.detail
+    return StepResult(StepStatus.FAILED, detail), engine, fallback
 
 
 def _check_microphone() -> "StepResult":
@@ -175,16 +218,23 @@ def main() -> int:
 
         launcher = StepResult(StepStatus.SKIPPED, "dependências falharam")
 
-    speech = _setup_speech_to_text() if dependencies.ok else None
-    if speech is None:
+    if dependencies.ok:
+        speech, engine, fallback = _setup_speech_to_text()
+    else:
         from services.first_run_setup import StepResult
 
         speech = StepResult(StepStatus.SKIPPED, "dependências falharam")
+        engine, fallback = "—", "—"
 
     microphone = _check_microphone()
 
     report = SetupReport(
-        launcher=launcher, dependencies=dependencies, speech_to_text=speech, microphone=microphone
+        launcher=launcher,
+        dependencies=dependencies,
+        speech_to_text=speech,
+        microphone=microphone,
+        engine=engine,
+        fallback=fallback,
     )
 
     print()
@@ -205,7 +255,14 @@ def main() -> int:
     print(_format_line("Launcher", _STATUS_LABEL[report.launcher.status]))
     print(_format_line("Dependencies", _STATUS_LABEL[report.dependencies.status]))
     print(_format_line("Speech-to-Text", _STATUS_LABEL[report.speech_to_text.status]))
-    print(_format_line("Microphone", _STATUS_LABEL[report.microphone.status]))
+    print(_format_line("Engine", report.engine))
+    print(_format_line("Fallback", report.fallback))
+    microphone_value = (
+        report.microphone.detail
+        if report.microphone.status is StepStatus.DETECTED and report.microphone.detail
+        else _STATUS_LABEL[report.microphone.status]
+    )
+    print(_format_line("Microphone", microphone_value))
 
     for label, step in (
         ("Launcher", report.launcher),

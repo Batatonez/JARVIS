@@ -55,6 +55,28 @@ class AIService(ABC):
     async def close(self) -> None:
         """Encerra a sessão, se houver uma. Idempotente."""
 
+    # --- v1.3: requisição isolada -------------------------------------
+    # Concretos (não abstratos) para não quebrar nenhuma implementação
+    # existente nem fake de teste.
+
+    @property
+    def supports_isolated_requests(self) -> bool:
+        """`True` quando o provider consegue responder uma pergunta SEM
+        entrar no histórico da conversa."""
+        return False
+
+    async def ask_isolated(self, prompt: str, *, max_tokens: int = 64) -> str:
+        """Uma pergunta avulsa que **não** toca a sessão do usuário.
+
+        Existe para tarefas auxiliares — hoje só o título automático de chat
+        (`services/chat_title_service.py`). Sem isto, gerar um título com
+        `ask()` injetaria o prompt do título no histórico da conversa e a IA
+        passaria a responder considerando aquilo, o que é visível para o
+        usuário e simplesmente errado."""
+        raise AIServiceUnavailableError(
+            "Este provider não suporta requisições isoladas."
+        )
+
 
 class UnavailableAIService(AIService):
     """Placeholder: nenhum provider de IA está conectado nesta etapa."""

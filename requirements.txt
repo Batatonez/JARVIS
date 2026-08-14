@@ -35,3 +35,18 @@ sounddevice>=0.4.6,<1.0.0
 # modelo/voz extra para baixar), MPL-2.0.
 # https://github.com/nateshmbhat/pyttsx3
 pyttsx3>=2.90,<3.0.0
+
+# --- STT v1.3: faster-whisper como engine principal ---
+# faster-whisper — Whisper da OpenAI reimplementado sobre CTranslate2, MIT.
+# Roda 100% local em CPU, sem GPU e sem API paga. Muito melhor que o Vosk em
+# português: devolve texto pontuado e capitalizado e acerta frases curtas
+# (ver docs/speech-to-text.md para o benchmark que motivou a troca).
+# Traz numpy, ctranslate2, tokenizers, onnxruntime e huggingface-hub junto.
+# O MODELO (~141 MB no tamanho `base`) nunca é baixado sozinho — só por
+# `python setup.py` ou pelo HUD. https://github.com/SYSTRAN/faster-whisper
+faster-whisper>=1.0,<2.0
+
+# qrcode — gera a matriz do QR Code da ativação do 2FA (services/totp.py).
+# Puro Python, BSD, sem Pillow: usamos `get_matrix()` e o HUD desenha os
+# quadrados em QML, então nenhuma imagem é gerada nem gravada em disco.
+qrcode>=7.4,<9.0

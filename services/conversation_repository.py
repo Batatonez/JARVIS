@@ -18,16 +18,27 @@ _DEFAULT_TITLE = "Nova conversa"
 _MAX_TITLE_LENGTH = 60
 
 
-def derive_title(first_message_text: str) -> str:
-    """Título a partir das primeiras palavras da primeira mensagem — sem IA
-    (não temos Claude real, e mesmo com ele seria um passo futuro
-    deliberadamente fora desta versão). Só corta e limpa."""
-    text = " ".join(first_message_text.split())
+def sanitize_title(title: str) -> str:
+    """Limpa um título vindo do usuário ou da IA: sem quebras de linha, sem
+    caracteres de controle, espaços colapsados e comprimento limitado
+    (item 18). Vazio vira o título padrão."""
+    text = " ".join((title or "").split())
+    text = "".join(ch for ch in text if ch.isprintable())
+    text = text.strip()
     if not text:
         return _DEFAULT_TITLE
     if len(text) <= _MAX_TITLE_LENGTH:
         return text
     return text[:_MAX_TITLE_LENGTH].rstrip() + "…"
+
+
+def derive_title(first_message_text: str) -> str:
+    """Título provisório a partir das primeiras palavras da primeira
+    mensagem. Continua existindo como **fallback** do `ChatTitleService`
+    (v1.3): quando não há IA configurada, rota gratuita ou resposta
+    utilizável, é melhor um recorte do texto do que "Nova conversa" para
+    sempre (item 19)."""
+    return sanitize_title(first_message_text)
 
 
 class ConversationRepository:
@@ -108,12 +119,44 @@ class ConversationRepository:
         return cursor.rowcount > 0
 
     def rename_conversation(self, conversation_id: str, user_id: str, title: str) -> bool:
+        """Rename MANUAL (item 18). Marca `manual_title = 1`, e a partir daí
+        nenhum título automático sobrescreve este (item 23)."""
         if not self._owns(conversation_id, user_id):
             return False
-        title = title.strip() or _DEFAULT_TITLE
-        self._conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))
+        title = sanitize_title(title)
+        self._conn.execute(
+            "UPDATE conversations SET title = ?, manual_title = 1 WHERE id = ?",
+            (title, conversation_id),
+        )
         self._conn.commit()
         return True
+
+    def set_automatic_title(self, conversation_id: str, user_id: str, title: str) -> bool:
+        """Título gerado pelo `ChatTitleService`. **Recusa** sobrescrever um
+        título definido à mão.
+
+        A regra vive aqui, na persistência, e não numa checagem que o
+        chamador precisa lembrar de fazer: o `WHERE manual_title = 0` é o que
+        torna impossível um caminho novo furar o item 23 por esquecimento."""
+        if not self._owns(conversation_id, user_id):
+            return False
+        cleaned = sanitize_title(title)
+        if not cleaned or cleaned == _DEFAULT_TITLE:
+            return False
+        cursor = self._conn.execute(
+            "UPDATE conversations SET title = ? WHERE id = ? AND manual_title = 0",
+            (cleaned, conversation_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def has_manual_title(self, conversation_id: str, user_id: str) -> bool:
+        if not self._owns(conversation_id, user_id):
+            return False
+        row = self._conn.execute(
+            "SELECT manual_title FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return bool(row["manual_title"]) if row is not None else False
 
     def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
         if not self._owns(conversation_id, user_id):

@@ -71,7 +71,7 @@ class AccountManagerAuthTests(unittest.IsolatedAsyncioTestCase):
             await account.logout()
 
             with self.assertRaises(InvalidCredentialsError):
-                await account.login(username="alice", password="senha-errada")
+                await account.login(identifier="alice", password="senha-errada")
         finally:
             await account.shutdown()
 
@@ -82,7 +82,7 @@ class AccountManagerAuthTests(unittest.IsolatedAsyncioTestCase):
             await account.register(username="alice", display_name="Alice", password="senha-forte-123")
             await account.logout()
 
-            user = await account.login(username="alice", password="senha-forte-123")
+            user = await account.login(identifier="alice", password="senha-forte-123")
 
             self.assertEqual(user.username, "alice")
             self.assertTrue(account.is_authenticated)

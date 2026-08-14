@@ -221,7 +221,7 @@ class EmailVerificationTests(unittest.IsolatedAsyncioTestCase):
 
         second = self._account(settings=settings, mailer=self.mailer)
         try:
-            user = await second.login(username="alice", password="senha-forte-123")
+            user = await second.login(identifier="alice", password="senha-forte-123")
             challenge = second.active_verification_challenge()
 
             self.assertIsNotNone(challenge)

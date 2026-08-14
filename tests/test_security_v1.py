@@ -64,15 +64,15 @@ class BruteForceProtectionTests(unittest.IsolatedAsyncioTestCase):
             # As 4 primeiras falhas ainda são "só" credencial inválida.
             for _ in range(4):
                 with self.assertRaises(InvalidCredentialsError):
-                    await account.login(username="alice", password="errada")
+                    await account.login(identifier="alice", password="errada")
 
             # A 5ª dispara o cooldown...
             with self.assertRaises(InvalidCredentialsError):
-                await account.login(username="alice", password="errada")
+                await account.login(identifier="alice", password="errada")
 
             # ...e a partir daí até a SENHA CERTA é recusada enquanto durar.
             with self.assertRaises(AccountLockedError) as ctx:
-                await account.login(username="alice", password="senha-forte-123")
+                await account.login(identifier="alice", password="senha-forte-123")
             self.assertGreater(ctx.exception.retry_after_seconds, 0)
         finally:
             await account.shutdown()
@@ -88,7 +88,7 @@ class BruteForceProtectionTests(unittest.IsolatedAsyncioTestCase):
             await account.logout()
             for _ in range(30):
                 try:
-                    await account.login(username="alice", password="errada")
+                    await account.login(identifier="alice", password="errada")
                 except (InvalidCredentialsError, AccountLockedError):
                     pass
 
@@ -108,9 +108,9 @@ class BruteForceProtectionTests(unittest.IsolatedAsyncioTestCase):
             await account.logout()
             for _ in range(3):
                 with self.assertRaises(InvalidCredentialsError):
-                    await account.login(username="alice", password="errada")
+                    await account.login(identifier="alice", password="errada")
 
-            await account.login(username="alice", password="senha-forte-123")
+            await account.login(identifier="alice", password="senha-forte-123")
 
             row = account._conn.execute(
                 "SELECT failed_login_attempts, lockout_until FROM users WHERE id = ?", (user.id,)
@@ -131,9 +131,9 @@ class BruteForceProtectionTests(unittest.IsolatedAsyncioTestCase):
             await account.logout()
 
             with self.assertRaises(InvalidCredentialsError) as unknown:
-                await account.login(username="nao-existe", password="x")
+                await account.login(identifier="nao-existe", password="x")
             with self.assertRaises(InvalidCredentialsError) as wrong:
-                await account.login(username="alice", password="errada")
+                await account.login(identifier="alice", password="errada")
 
             self.assertEqual(str(unknown.exception), str(wrong.exception))
         finally:
@@ -298,11 +298,11 @@ class SqlInjectionTests(unittest.IsolatedAsyncioTestCase):
 
             for payload in ("alice'--", "' OR '1'='1", "'; DROP TABLE users;--"):
                 with self.assertRaises(InvalidCredentialsError):
-                    await account.login(username=payload, password="qualquer")
+                    await account.login(identifier=payload, password="qualquer")
 
             # A tabela continua lá e a conta continua utilizável.
             self.assertTrue(account._users.has_any_user())
-            user = await account.login(username="alice", password="senha-forte-123")
+            user = await account.login(identifier="alice", password="senha-forte-123")
             self.assertEqual(user.username, "alice")
         finally:
             await account.shutdown()

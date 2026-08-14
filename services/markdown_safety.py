@@ -19,6 +19,8 @@ O texto RAW nunca é alterado no banco: isto é só a camada de exibição
 
 import re
 
+from services.web_images import strip_markdown_images
+
 # Blocos de código são preservados intactos: dentro deles, `<script>` é
 # conteúdo legítimo que o usuário quer LER, e o Qt já não interpreta HTML
 # dentro de bloco de código.
@@ -80,13 +82,29 @@ def sanitize_markdown(text: str) -> str:
 
     for start, end in merged:
         segment = text[last_end:start]
-        parts.append(_neutralize_dangerous_urls(_escape_html_tags(segment)))
+        parts.append(_sanitize_segment(segment))
         parts.append(text[start:end])  # código: intocado
         last_end = end
     tail = text[last_end:]
-    parts.append(_neutralize_dangerous_urls(_escape_html_tags(tail)))
+    parts.append(_sanitize_segment(tail))
 
     return "".join(parts)
+
+
+def _sanitize_segment(segment: str) -> str:
+    """Ordem importa: as imagens Markdown saem ANTES de escapar HTML.
+
+    v1.3, item 29 — a IA não pode exibir imagem remota só escrevendo
+    `![](url)`. Toda imagem mostrada precisa ter passado pelo pipeline
+    validado de `services/web_images.py`; sem esta remoção, uma resposta com
+    `![](file:///C:/Users/...)` ou `![](http://127.0.0.1:8080/admin)` faria o
+    renderizador do Qt buscar aquele recurso — leitura de arquivo local e
+    varredura de porta interna disparadas por texto de modelo.
+
+    `_neutralize_dangerous_urls` sozinho não bastaria: ele quebra
+    `javascript:`/`file:`/`data:`, mas deixaria passar um `https://` externo
+    (vazamento de IP por pixel de rastreio) e um `http://` para rede local."""
+    return _neutralize_dangerous_urls(_escape_html_tags(strip_markdown_images(segment)))
 
 
 def contains_raw_html(text: str) -> bool:

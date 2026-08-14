@@ -17,6 +17,7 @@ Item {
     signal newConversationRequested()
     signal conversationSelected(string conversationId)
     signal deleteRequested(string conversationId)
+    signal renameRequested(string conversationId, string newTitle)
     signal searchTextChanged(string query)
     signal accountClicked()
     signal toggleRequested()
@@ -202,6 +203,7 @@ Item {
                                 active: modelData.id === root.currentConversationId
                                 onClicked: root.conversationSelected(modelData.id)
                                 onDeleteClicked: root.deleteRequested(modelData.id)
+                                onRenamed: (newTitle) => root.renameRequested(modelData.id, newTitle)
                             }
                         }
                     }

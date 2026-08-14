@@ -146,7 +146,7 @@ class ChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
             voice_service_factory=build_isolated_voice_service,
         )
         try:
-            await second.login(username="alice", password="senha-forte-123")
+            await second.login(identifier="alice", password="senha-forte-123")
             # `_open_session` reabre a conversa mais recente automaticamente.
             messages = second.app.get_messages()
 

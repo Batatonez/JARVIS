@@ -11,21 +11,60 @@ SHA-256 puro (e não scrypt como nas senhas) é adequado aqui porque o token
 tem 256 bits de entropia vinda de `secrets` — não há espaço de busca a
 proteger com custo artificial, ao contrário de uma senha escolhida por
 humano. Ver docs/security.md.
+
+**v1.3**: metadata para a tela "Active Sessions" (`created_at`,
+`last_used_at`, plataforma e um rótulo de dispositivo). O que a tela mostra é
+deliberadamente pobre — nada de IP, geolocalização ou fingerprint: um
+assistente local não tem essa informação de verdade e inventá-la daria uma
+falsa sensação de auditoria. E **nunca** o token, nem parte dele (item 54).
 """
 
 import hashlib
+import platform
 import secrets
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 _TOKEN_BYTES = 32
 _DEFAULT_TTL_DAYS = 30
+_MAX_LABEL_LENGTH = 80
 
 
 def hash_token(token: str) -> str:
     """Hash determinístico do token, usado como chave primária de `sessions`.
     Determinístico de propósito: precisamos procurar por ele."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def describe_current_device() -> tuple[str, str]:
+    """`(plataforma, rótulo)` desta máquina, para a lista de sessões ficar
+    reconhecível. Só dados de ambiente já disponíveis — nada é coletado nem
+    enviado para lugar nenhum, e nada disso vira memória pessoal (ver
+    CLAUDE.md, "Metadados técnicos não são memória pessoal")."""
+    try:
+        system = platform.system() or "?"
+        release = platform.release() or ""
+        node = platform.node() or ""
+    except Exception:
+        return ("?", "Este dispositivo")
+    label = f"{node} · {system} {release}".strip(" ·")
+    return (f"{system} {release}".strip(), label[:_MAX_LABEL_LENGTH] or "Este dispositivo")
+
+
+@dataclass(frozen=True)
+class SessionInfo:
+    """Uma linha da tela "Active Sessions". Note o que NÃO existe aqui:
+    nenhum campo carrega o token nem seu hash — `is_current` é resolvido no
+    repositório, comparando hashes internamente."""
+
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime
+    platform: str
+    device_label: str
+    is_current: bool
+    session_id: str
 
 
 class SessionRepository:
@@ -39,9 +78,19 @@ class SessionRepository:
         token = secrets.token_urlsafe(_TOKEN_BYTES)
         now = datetime.now(timezone.utc)
         expires_at = now + self._ttl
+        platform_name, device_label = describe_current_device()
         self._conn.execute(
-            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (hash_token(token), user_id, now.isoformat(), expires_at.isoformat()),
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at, "
+            "                      platform, device_label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                hash_token(token),
+                user_id,
+                now.isoformat(),
+                expires_at.isoformat(),
+                now.isoformat(),
+                platform_name,
+                device_label,
+            ),
         )
         self._conn.commit()
         return token
@@ -63,13 +112,71 @@ class SessionRepository:
             return None
         return row["user_id"]
 
+    def touch(self, token: str) -> None:
+        """Atualiza `last_used_at`. Chamado no auto-login, não a cada
+        mensagem: a granularidade útil para o usuário é "quando este
+        dispositivo entrou pela última vez", e escrever no banco a cada
+        interação seria custo sem informação nova."""
+        if not token:
+            return
+        self._conn.execute(
+            "UPDATE sessions SET last_used_at = ? WHERE token_hash = ?",
+            (datetime.now(timezone.utc).isoformat(), hash_token(token)),
+        )
+        self._conn.commit()
+
+    def list_sessions(self, user_id: str, *, current_token: str | None = None) -> list[SessionInfo]:
+        """Sessões vivas da conta, mais recentes primeiro. Expiradas são
+        filtradas na leitura (e não apagadas aqui: limpeza é efeito colateral
+        de `validate_session`, e uma listagem deve ser só leitura)."""
+        current_hash = hash_token(current_token) if current_token else None
+        rows = self._conn.execute(
+            "SELECT token_hash, created_at, expires_at, last_used_at, platform, device_label "
+            "FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+
+        now = datetime.now(timezone.utc)
+        sessions: list[SessionInfo] = []
+        for row in rows:
+            expires_at = datetime.fromisoformat(row["expires_at"])
+            if expires_at <= now:
+                continue
+            last_used = row["last_used_at"]
+            sessions.append(
+                SessionInfo(
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    last_used_at=datetime.fromisoformat(last_used) if last_used else None,
+                    expires_at=expires_at,
+                    platform=row["platform"] or "?",
+                    device_label=row["device_label"] or "Dispositivo desconhecido",
+                    is_current=(current_hash is not None and row["token_hash"] == current_hash),
+                    # Identificador opaco e derivado, só para a UI ter uma
+                    # chave de lista — não serve para autenticar nada, e não
+                    # permite reconstruir o token (é um prefixo do HASH).
+                    session_id=row["token_hash"][:16],
+                )
+            )
+        return sessions
+
     def delete_session(self, token: str) -> None:
         self._delete_by_hash(hash_token(token))
 
     def delete_all_for_user(self, user_id: str) -> int:
-        """Revoga TODAS as sessões de um usuário (ex.: troca de senha, ou um
-        "sair de todos os dispositivos" futuro). Devolve quantas foram."""
+        """Revoga TODAS as sessões de um usuário. Devolve quantas foram."""
         cursor = self._conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        self._conn.commit()
+        return cursor.rowcount
+
+    def delete_others_for_user(self, user_id: str, *, keep_token: str) -> int:
+        """"Sair das outras sessões" (item 55): revoga tudo menos a atual.
+
+        O escopo por `user_id` é o que impede esta operação de virar um
+        caminho para derrubar a sessão de outra conta."""
+        cursor = self._conn.execute(
+            "DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?",
+            (user_id, hash_token(keep_token)),
+        )
         self._conn.commit()
         return cursor.rowcount
 

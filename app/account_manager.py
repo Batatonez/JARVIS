@@ -27,9 +27,17 @@ from app.core import JarvisCore
 from app.entitlements import Entitlements, entitlements_for
 from app.models import AppError, AppErrorCode, AppEvent, ConversationSummary, Message, MessageRole, User
 from config.settings import Settings
-from services import memory_migration, session_store
+from services import account_deletion, memory_migration, session_store
+from services.account_service import AccountService
 from services.ai_service import AIService
+from services.chat_title_service import ChatTitleService
 from services.conversation_repository import ConversationRepository, derive_title
+from services.email_change_service import (
+    EmailChangeRequestResult,
+    EmailChangeService,
+    PendingEmailChange,
+    PendingEmailChangeRepository,
+)
 from services.email_service import EmailService, create_email_service
 from services.email_verification_repository import EmailVerificationRepository, VerificationChallenge
 from services.email_verification_service import EmailVerificationService, VerificationRequestResult
@@ -41,23 +49,40 @@ from services.long_term_memory import (
     format_memories_for_context,
 )
 from services.memory_service import MemoryService
-from services.session_repository import SessionRepository
+from services.reauth import ReauthGuard
+from services.recovery_code_repository import RecoveryCodeRepository
+from services.session_repository import SessionInfo, SessionRepository
+from services.two_factor_service import TwoFactorEnrollment, TwoFactorService, TwoFactorStatus
 from services.user_repository import (
     AccountLockedError,
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
+    InvalidEmailError,
+    InvalidUsernameError,
     UserRepository,
     UsernameAlreadyExistsError,
 )
+from services.user_settings_repository import KEY_MICROPHONE, UserSettingsRepository
 from services.voice_service import VoiceService
 
 logger = logging.getLogger(__name__)
+
+
+class TwoFactorRequiredError(Exception):
+    """A senha bateu, mas a conta tem 2FA ativo — nenhuma sessão foi criada
+    ainda (item 52). O fluxo continua em `AccountManager.complete_two_factor`.
+
+    Exceção (e não um retorno especial) de propósito: assim é impossível um
+    chamador ignorar o segundo fator por engano e seguir tratando o retorno
+    como "logado"."""
+
 
 __all__ = [
     "AccountLockedError",
     "AccountManager",
     "EmailAlreadyRegisteredError",
     "InvalidCredentialsError",
+    "TwoFactorRequiredError",
     "UsernameAlreadyExistsError",
 ]
 
@@ -86,11 +111,31 @@ class AccountManager:
         self._sessions = SessionRepository(self._conn)
         self._conversations = ConversationRepository(self._conn)
         self._memories = LongTermMemoryRepository(self._conn)
+        self._user_settings = UserSettingsRepository(self._conn)
+        self._recovery_codes = RecoveryCodeRepository(self._conn)
         self._ai_service_factory = ai_service_factory
         self._voice_service_factory = voice_service_factory
+
+        email = email_service or create_email_service(settings)
         self.verification = EmailVerificationService(
-            EmailVerificationRepository(self._conn),
-            email_service or create_email_service(settings),
+            EmailVerificationRepository(self._conn), email, app_name=settings.app_name
+        )
+
+        # v1.3 — uma única guarda de reautenticação recente para TODAS as
+        # operações sensíveis (item 45). Todos os serviços abaixo recebem a
+        # MESMA instância: confirmar a senha uma vez vale para a sequência de
+        # ajustes que o usuário está fazendo, e invalidar (logout, troca de
+        # senha) fecha a janela para todos de uma vez.
+        self.reauth = ReauthGuard()
+        self.account = AccountService(self._users, self._sessions, reauth=self.reauth)
+        self.two_factor = TwoFactorService(
+            self._users, self._recovery_codes, reauth=self.reauth, issuer=settings.app_name
+        )
+        self.email_change = EmailChangeService(
+            PendingEmailChangeRepository(self._conn),
+            self._users,
+            email,
+            reauth=self.reauth,
             app_name=settings.app_name,
         )
 
@@ -98,6 +143,13 @@ class AccountManager:
         self._current_session_token: str | None = None
         self._current_conversation_id: str | None = None
         self._persisted_message_ids: set[str] = set()
+        # Conta que passou pela senha mas ainda deve o segundo fator. Só vive
+        # em RAM e só entre `login()` e `complete_two_factor()`.
+        self._pending_two_factor_user_id: str | None = None
+        self._titles: ChatTitleService | None = None
+        # Conversas que já receberam (ou dispensaram) título automático nesta
+        # sessão — evita repetir a chamada a cada mensagem nova.
+        self._auto_titled: set[str] = set()
 
         self.core: JarvisCore | None = None
         self.app: JarvisApplication | None = None
@@ -143,6 +195,9 @@ class AccountManager:
         if user is None:
             session_store.clear_token(self.settings.session_token_path)
             return None
+        # Marca este dispositivo como usado agora — é o que faz a tela
+        # "Active Sessions" mostrar informação verdadeira (item 54).
+        self._sessions.touch(token)
         await self._open_session(user, token)
         return user
 
@@ -172,10 +227,59 @@ class AccountManager:
         await self._open_session(user, token)
         return user
 
-    async def login(self, *, username: str, password: str) -> User:
-        # Levanta InvalidCredentialsError (usuário/senha) ou AccountLockedError
-        # (cooldown de força bruta) — ver services/user_repository.py.
-        user = self._users.authenticate(username=username, password=password)
+    async def login(self, *, identifier: str, password: str) -> User:
+        """`identifier` é **username OU e-mail** (item 38) — quem resolve isso
+        é o repositório, numa query só, para os dois caminhos custarem o
+        mesmo tempo.
+
+        Levanta `InvalidCredentialsError` (mesma mensagem para conta
+        inexistente e senha errada), `AccountLockedError` (cooldown de força
+        bruta) ou `TwoFactorRequiredError` (item 52: a senha bateu, mas nenhuma
+        sessão é criada antes do segundo fator)."""
+        user = self._users.authenticate(identifier=identifier, password=password)
+
+        if self._users.is_totp_enabled(user.id):
+            self._pending_two_factor_user_id = user.id
+            raise TwoFactorRequiredError(
+                "Digite o código do seu aplicativo autenticador."
+            )
+
+        return await self._establish_session(user)
+
+    async def complete_two_factor(self, code: str) -> tuple[User | None, AppError | None]:
+        """Segundo passo do login com 2FA. Só aqui a sessão é criada.
+
+        O `user_id` vem de `self._pending_two_factor_user_id`, gravado quando
+        a senha foi validada — nunca de um parâmetro. Sem isso, este método
+        seria um caminho para logar em qualquer conta só sabendo um código."""
+        user_id = self._pending_two_factor_user_id
+        if user_id is None:
+            return None, AppError(
+                AppErrorCode.INTERNAL_ERROR, "Nenhum login aguardando verificação."
+            )
+
+        error = self.two_factor.verify(user_id=user_id, code=code)
+        if error is not None:
+            return None, error
+
+        user = self._users.get_user(user_id)
+        if user is None:
+            self._pending_two_factor_user_id = None
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Conta não encontrada.")
+
+        self._pending_two_factor_user_id = None
+        return await self._establish_session(user), None
+
+    def cancel_two_factor(self) -> None:
+        """Usuário desistiu na tela do segundo fator — descarta o login
+        parcial. Sem isto, o pendente sobreviveria até o próximo login."""
+        self._pending_two_factor_user_id = None
+
+    @property
+    def awaiting_two_factor(self) -> bool:
+        return self._pending_two_factor_user_id is not None
+
+    async def _establish_session(self, user: User) -> User:
         token = self._sessions.create_session(user.id)
         session_store.save_token(self.settings.session_token_path, token)
         await self._open_session(user, token)
@@ -254,10 +358,15 @@ class AccountManager:
         if self._current_session_token is not None:
             self._sessions.delete_session(self._current_session_token)
         session_store.clear_token(self.settings.session_token_path)
+        # A janela de reautenticação recente nunca sobrevive ao logout.
+        self.reauth.invalidate()
+        self._pending_two_factor_user_id = None
         self._current_user = None
         self._current_session_token = None
         self._current_conversation_id = None
         self._persisted_message_ids = set()
+        self._auto_titled = set()
+        self._titles = None
 
     async def shutdown(self) -> None:
         """Encerramento do processo (janela fechando) — diferente de
@@ -344,9 +453,71 @@ class AccountManager:
         return True
 
     def rename_conversation(self, conversation_id: str, title: str) -> bool:
+        """Rename manual (item 18). Marca `manual_title` no banco, e a partir
+        daí o título automático nunca sobrescreve (item 23)."""
         if self._current_user is None:
             return False
-        return self._conversations.rename_conversation(conversation_id, self._current_user.id, title)
+        renamed = self._conversations.rename_conversation(
+            conversation_id, self._current_user.id, title
+        )
+        if renamed:
+            # Já tem nome definido pelo dono: não gastar chamada de IA nem
+            # tentar renomear de novo nesta sessão.
+            self._auto_titled.add(conversation_id)
+        return renamed
+
+    async def _auto_title_task(self) -> None:
+        """Wrapper que nunca deixa uma falha de título escapar para o
+        consumidor de eventos — nomear um chat não pode derrubar o chat."""
+        try:
+            title = await self._maybe_generate_title()
+        except Exception:
+            logger.exception("Falha ao gerar título automático; conversa segue normalmente.")
+            return
+        if title and self.app is not None:
+            # Avisa o frontend para a sidebar recarregar com o nome novo.
+            self.app.emit_external_event("conversation.retitled", {"title": title})
+
+    async def _maybe_generate_title(self) -> str | None:
+        """Título automático depois da primeira troca (item 19).
+
+        Roda uma vez por conversa e só quando já existem a primeira mensagem
+        do usuário E a primeira resposta — é o contexto mínimo para inferir o
+        assunto em vez de copiar a pergunta. Falhar é silencioso: o chat
+        mantém o título derivado do texto."""
+        conversation_id = self._current_conversation_id
+        if conversation_id is None or self._current_user is None or self.core is None:
+            return None
+        if conversation_id in self._auto_titled:
+            return None
+        if self._conversations.has_manual_title(conversation_id, self._current_user.id):
+            self._auto_titled.add(conversation_id)
+            return None
+        if self.app is None:
+            return None
+
+        messages = self.app.get_messages()
+        first_user = next((m for m in messages if m.role is MessageRole.USER), None)
+        first_assistant = next((m for m in messages if m.role is MessageRole.ASSISTANT), None)
+        if first_user is None or first_assistant is None:
+            return None
+
+        # Marca ANTES de chamar: se a IA demorar e outra resposta chegar, não
+        # queremos duas gerações concorrentes para a mesma conversa.
+        self._auto_titled.add(conversation_id)
+
+        titles = ChatTitleService(self.core.ai_service)
+        title = await titles.suggest(
+            user_message=first_user.content, assistant_message=first_assistant.content
+        )
+        if not title:
+            return None
+        if self._conversations.set_automatic_title(
+            conversation_id, self._current_user.id, title
+        ):
+            logger.info("Título automático aplicado à conversa.")
+            return title
+        return None
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         if self._current_user is None:
@@ -367,6 +538,11 @@ class AccountManager:
                     self._persist_new_messages(event)
                 except Exception:
                     logger.exception("Erro ao persistir mensagem (evento '%s').", event.type)
+                if event.type == "response.completed":
+                    # Título automático depois da primeira troca (item 19).
+                    # Numa task separada: gerar o título chama a IA, e o
+                    # consumidor de eventos não pode ficar bloqueado nisso.
+                    asyncio.ensure_future(self._auto_title_task())
         finally:
             if self.app is not None:
                 self.app.unsubscribe(self._event_queue)
@@ -450,6 +626,210 @@ class AccountManager:
         # A sanitização de segredos continua valendo: este texto se junta ao
         # que já passa por `context_builder` no system prompt.
         return sanitize_context(format_memories_for_context(relevant))
+
+    # ------------------------------------------------------------------
+    # Account Settings (v1.3)
+    #
+    # Todo método aqui resolve `user_id` a partir de `self._current_user` — o
+    # frontend NUNCA escolhe em qual conta a operação acontece (item 60).
+    # ------------------------------------------------------------------
+
+    def confirm_password(self, password: str) -> AppError | None:
+        """Abre a janela de reautenticação recente. Porta de entrada de todas
+        as operações sensíveis (item 45)."""
+        if self._current_user is None:
+            return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        return self.account.confirm_password(
+            user_id=self._current_user.id, password=password
+        )
+
+    def reauth_valid(self) -> bool:
+        return self.reauth.is_valid()
+
+    def change_display_name(self, display_name: str) -> tuple[User | None, AppError | None]:
+        if self._current_user is None:
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        user, error = self.account.change_display_name(
+            user_id=self._current_user.id, display_name=display_name
+        )
+        if user is not None:
+            self._current_user = user
+        return user, error
+
+    def change_username(self, username: str) -> tuple[User | None, AppError | None]:
+        if self._current_user is None:
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        user, error = self.account.change_username(
+            user_id=self._current_user.id, username=username
+        )
+        if user is not None:
+            self._current_user = user
+        return user, error
+
+    def change_password(
+        self, *, current_password: str, new_password: str, confirm_password: str
+    ) -> tuple[int, AppError | None]:
+        """Troca a senha e derruba as OUTRAS sessões (item 44). A sessão deste
+        aparelho sobrevive — o usuário não é expulso de onde acabou de agir."""
+        if self._current_user is None:
+            return 0, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        return self.account.change_password(
+            user_id=self._current_user.id,
+            current_password=current_password,
+            new_password=new_password,
+            confirm_password=confirm_password,
+            current_token=self._current_session_token,
+        )
+
+    # --- Troca de e-mail (duas fases) ---
+
+    async def request_email_change(self, new_email: str, *, force: bool = False) -> EmailChangeRequestResult:
+        if self._current_user is None:
+            return EmailChangeRequestResult(
+                sent=False,
+                error=AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada."),
+            )
+        return await self.email_change.request_change(
+            user_id=self._current_user.id, new_email=new_email, force=force
+        )
+
+    async def confirm_email_change(self, code: str) -> AppError | None:
+        if self._current_user is None:
+            return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        error = await self.email_change.confirm_change(user_id=self._current_user.id, code=code)
+        if error is None:
+            self._current_user = self._users.get_user(self._current_user.id) or self._current_user
+        return error
+
+    def active_email_change(self) -> PendingEmailChange | None:
+        if self._current_user is None:
+            return None
+        return self.email_change.active_request(self._current_user.id)
+
+    # --- 2FA ---
+
+    def two_factor_status(self) -> TwoFactorStatus | None:
+        if self._current_user is None:
+            return None
+        return self.two_factor.status(self._current_user.id)
+
+    def start_two_factor_enrollment(self) -> tuple[TwoFactorEnrollment | None, AppError | None]:
+        if self._current_user is None:
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        # O rótulo da conta no autenticador usa o e-mail quando existe (é o
+        # que o usuário reconhece na lista do app), senão o username.
+        account_name = self._current_user.email or self._current_user.username
+        return self.two_factor.start_enrollment(
+            user_id=self._current_user.id, account_name=account_name
+        )
+
+    def confirm_two_factor_enrollment(self, code: str) -> tuple[list[str] | None, AppError | None]:
+        if self._current_user is None:
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        codes, error = self.two_factor.confirm_enrollment(
+            user_id=self._current_user.id, code=code
+        )
+        if error is None:
+            self._current_user = self._users.get_user(self._current_user.id) or self._current_user
+        return codes, error
+
+    def regenerate_recovery_codes(self, code: str) -> tuple[list[str] | None, AppError | None]:
+        if self._current_user is None:
+            return None, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        return self.two_factor.regenerate_recovery_codes(
+            user_id=self._current_user.id, code=code
+        )
+
+    def disable_two_factor(self, code: str) -> AppError | None:
+        if self._current_user is None:
+            return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        error = self.two_factor.disable(user_id=self._current_user.id, code=code)
+        if error is None:
+            self._current_user = self._users.get_user(self._current_user.id) or self._current_user
+        return error
+
+    # --- Sessões ---
+
+    def list_sessions(self) -> list[SessionInfo]:
+        if self._current_user is None:
+            return []
+        return self.account.list_sessions(
+            user_id=self._current_user.id, current_token=self._current_session_token
+        )
+
+    def log_out_other_sessions(self) -> tuple[int, AppError | None]:
+        if self._current_user is None:
+            return 0, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        return self.account.log_out_other_sessions(
+            user_id=self._current_user.id, current_token=self._current_session_token
+        )
+
+    # --- Exclusão da conta ---
+
+    async def delete_current_account(
+        self, *, password: str, confirmation: str, two_factor_code: str = ""
+    ) -> AppError | None:
+        """Apaga SOMENTE a conta atual (item 56). Ordem das travas: senha ->
+        segundo fator (se ativo) -> texto `DELETE` digitado. Só depois disso
+        alguma coisa é removida."""
+        user = self._current_user
+        if user is None:
+            return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+
+        if not self._users.verify_password_for(user.id, password):
+            return AppError(AppErrorCode.INVALID_PASSWORD, "Senha incorreta.")
+
+        if self._users.is_totp_enabled(user.id):
+            error = self.two_factor.verify(user_id=user.id, code=two_factor_code)
+            if error is not None:
+                return error
+
+        if (confirmation or "").strip().upper() != "DELETE":
+            return AppError(
+                AppErrorCode.CONFIRMATION_MISMATCH,
+                "Digite DELETE para confirmar a exclusão da conta.",
+            )
+
+        # Encerra a Application Layer antes de apagar: sem isto, o consumidor
+        # de eventos poderia tentar persistir uma mensagem numa conta que já
+        # não existe mais.
+        await self._teardown_session()
+        try:
+            account_deletion.delete_account(
+                self._conn, user_id=user.id, users_dir=self.settings.users_dir
+            )
+        except account_deletion.AccountDeletionError as exc:
+            logger.warning("Falha ao apagar a conta: %s", exc)
+            return AppError(AppErrorCode.INTERNAL_ERROR, str(exc))
+
+        session_store.clear_token(self.settings.session_token_path)
+        self.reauth.invalidate()
+        self._current_user = None
+        self._current_session_token = None
+        self._current_conversation_id = None
+        self._persisted_message_ids = set()
+        self._auto_titled = set()
+        logger.info("Conta apagada a pedido do usuário.")
+        return None
+
+    # ------------------------------------------------------------------
+    # Preferências (v1.3)
+    # ------------------------------------------------------------------
+
+    def preferred_microphone_key(self) -> str | None:
+        if self._current_user is None:
+            return None
+        return self._user_settings.get(self._current_user.id, KEY_MICROPHONE)
+
+    def set_preferred_microphone(self, device_key: str | None) -> None:
+        """Guarda a CHAVE estável do dispositivo (host API + nome), nunca o
+        índice — ver `services/audio_devices.py`, item 14."""
+        if self._current_user is None:
+            return
+        if device_key:
+            self._user_settings.set(self._current_user.id, KEY_MICROPHONE, device_key)
+        else:
+            self._user_settings.clear(self._current_user.id, KEY_MICROPHONE)
 
     def list_memories(self):
         if self._current_user is None:

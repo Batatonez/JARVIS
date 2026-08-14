@@ -207,10 +207,15 @@ JarvisApplication
 VoiceService (services/voice_service.py)
     ├── SpeechToTextService          (services/stt_service.py)
     │       ├── UnavailableSTTService     (sem mic/modelo/dependência)
-    │       └── VoskSTTProvider           (services/vosk_stt_provider.py — Vosk, offline)
+    │       └── BufferedSTTProvider       (captura em buffer, transcreve no fim)
+    │               ├── FasterWhisperSTTProvider  (v1.3 — engine PRINCIPAL)
+    │               └── VoskSTTProvider           (v1.3 — fallback leve)
     └── TextToSpeechService          (services/tts_service.py)
             ├── UnavailableTTSService     (sem engine)
             └── SapiTTSProvider           (services/sapi_tts_provider.py — SAPI5/Windows, offline)
+
+AudioCapture   (services/audio_capture.py)  — captura + VAD + nível, compartilhada
+AudioDevices   (services/audio_devices.py)  — enumeração e chave estável de dispositivo
 ```
 
 O QML **nunca** fala com STT/TTS diretamente — só com o Bridge, que só fala com `JarvisApplication` (mesma regra do resto da Application Layer). `VoiceService` não conhece Qt: emite no mesmo `EventBus` interno que `JarvisCore` já usava (`voice.listening.started/stopped`, `voice.transcription.started/completed/failed`, `voice.speaking.started/stopped/failed`, `voice.level`), relayado como `AppEvent` por `JarvisApplication` exatamente como `state.changed` já era.
@@ -244,6 +249,36 @@ O QML **nunca** fala com STT/TTS diretamente — só com o Bridge, que só fala 
 **Privacidade**: o microfone só liga em resposta a uma ação explícita do usuário (clique ou `Ctrl+Space`); nenhum áudio é escrito em disco — `VoskSTTProvider` processa os frames PCM em streaming, direto da callback do PortAudio para o `KaldiRecognizer`, sem arquivo intermediário (nem temporário).
 
 **Transcrição não vai para a IA sozinha**: o texto reconhecido chega só como payload do evento `voice.transcription.completed` — quem decide o que fazer com ele é o frontend (no HUD, cai no `InputBar` para revisão). Nenhuma tool real é acionada por voz, e não existe atalho que pule `PermissionService` (ver "Voz e permissões" abaixo).
+
+### Reescrita do STT (v1.3) — faster-whisper principal, Vosk fallback
+
+**Status: implementado.** Ver [`docs/speech-to-text.md`](speech-to-text.md) para o detalhamento completo (causa raiz, benchmark, VAD, sample rate).
+
+Resumo do que mudou e por quê:
+
+- **Causa raiz da perda de palavras** ("Opa, tudo bem?" → "bem"): `AcceptWaveform()` devolve `True` quando o endpointer do Kaldi fecha uma utterance, e o texto dela só existe em `Result()`. A v1.2 ignorava esse retorno e lia apenas `FinalResult()` — tudo que fechou pelo caminho era descartado. Não era o modelo; era o uso.
+- **Captura separada dos engines.** `AudioCapture` devolve o buffer PCM inteiro e o provider transcreve de uma vez. Isso elimina por construção toda a classe de bug de "pedaço perdido entre parcial e final".
+- **faster-whisper como principal**, Vosk como fallback leve. O modelo `base` (141 MB) foi escolhido por ser o **menor** que acertou 100% das frases de benchmark em português — `small` custa 3,3× o disco e 3× a latência sem acertar mais nada.
+- **16 kHz negociado com o dispositivo** em vez de resample caseiro sempre. O `LinearResampler` virou caminho de exceção, com a borda de bloco corrigida, anti-aliasing adicionado e a limitação restante medida e documentada em vez de escondida.
+- **Seleção de microfone** persistida por **chave estável** (host API + nome), nunca pelo índice do PortAudio — que muda a cada USB conectado ou reboot.
+
+### Conta e segurança (v1.3)
+
+**Status: implementado.** Novas peças, cada uma com responsabilidade única:
+
+```
+AccountManager (app/account_manager.py)  — fachada única para o Bridge
+    ├── AccountService        perfil, senha, sessões        (services/account_service.py)
+    ├── TwoFactorService      TOTP + recovery codes         (services/two_factor_service.py)
+    ├── EmailChangeService    troca de e-mail em 2 fases    (services/email_change_service.py)
+    ├── ReauthGuard           reautenticação recente        (services/reauth.py)
+    └── account_deletion      exclusão da conta atual       (services/account_deletion.py)
+```
+
+- **`ReauthGuard` é único e compartilhado.** Toda operação sensível chama `require(...)`; nenhuma tela reimplementa a política, e mudar a janela é uma linha só.
+- **2FA nunca cria sessão só com a senha.** `login()` levanta `TwoFactorRequiredError` — exceção, não retorno especial, para ser impossível ignorar o segundo fator por engano.
+- **Identidade única no banco**, não só no serviço: `UNIQUE` em `normalized_username` e `normalized_email` (migração 4) fecha a corrida entre checagem e escrita. Duplicata legada **aborta a migração e reporta**, sem nunca apagar ou fundir conta.
+- **Título automático de chat** usa `ask_isolated()`, uma requisição avulsa que não toca o histórico da sessão — usar `ask()` injetaria o prompt do título na conversa do usuário.
 
 **Fala automática opt-in**: `Settings.voice_output_enabled` (padrão `False`) controla se `send_message()` dispara `self.speak(raw_reply)` automaticamente após um `response.completed`. O HUD liga/desliga isso em runtime via `set_voice_output_enabled()`, sem precisar reiniciar.
 

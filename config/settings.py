@@ -63,7 +63,7 @@ load_project_env(PROJECT_ROOT)
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "1.2.0"
+    core_version: str = "1.3.0"
 
     project_root: Path = PROJECT_ROOT
     # Memória legacy (pré-contas, v0.1-v0.8) — nunca apagada, só lida uma vez
@@ -88,6 +88,10 @@ class Settings:
     # ver services/vosk_model_manager.py). Movido de `voice_models/` (v0.7)
     # para dentro de `data/` — mesma regra de "nunca no Git" que o resto.
     stt_models_dir: Path = PROJECT_ROOT / "data" / "models" / "vosk"
+    # v1.3 — modelo do faster-whisper (engine principal de STT). Diretório
+    # separado do Vosk: são formatos e fontes diferentes, e o usuário pode
+    # ter os dois instalados (principal + fallback).
+    whisper_models_dir: Path = PROJECT_ROOT / "data" / "models" / "whisper"
 
     dev_mode: bool = _env_flag("JARVIS_DEV", False)
 
@@ -154,6 +158,26 @@ class Settings:
     # Windows. Vazio/None = escolhe automaticamente (preferência por uma voz
     # pt-BR se existir, senão a voz padrão do sistema).
     tts_voice: str | None = os.environ.get("JARVIS_TTS_VOICE") or None
+
+    # --- STT v1.3 (ver services/stt_service.py) ---
+    # "auto"  -> faster-whisper se instalado, senão Vosk (padrão)
+    # "vosk"  -> força o fallback leve, mesmo com o Whisper disponível
+    #            (máquina fraca, ou preferência explícita do usuário)
+    stt_engine_preference: str = (
+        os.environ.get("JARVIS_STT_ENGINE", "").strip().lower() or "auto"
+    )
+    # Tamanho do modelo Whisper. `base` é o padrão porque foi o MENOR modelo
+    # que acertou 100% das frases de benchmark em português (ver
+    # docs/speech-to-text.md): `tiny` erra nomes próprios e palavras curtas
+    # ("Davi" -> "David", "chat" -> "chate"), e `small` não acerta mais nada
+    # que o `base` já acertava — cobra 3,3x o disco (464MB vs 141MB) e 3x a
+    # latência (1,16s vs 0,38s) por zero ganho.
+    whisper_model_size: str = os.environ.get("JARVIS_WHISPER_MODEL", "").strip() or "base"
+    # Quantização do CTranslate2. `int8` roda em CPU com ~4x menos RAM que
+    # float32 e diferença de qualidade irrelevante para fala próxima.
+    whisper_compute_type: str = (
+        os.environ.get("JARVIS_WHISPER_COMPUTE_TYPE", "").strip() or "int8"
+    )
 
     def has_anthropic_api_key(self) -> bool:
         return bool(self.anthropic_api_key)

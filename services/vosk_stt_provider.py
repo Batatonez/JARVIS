@@ -1,212 +1,99 @@
 """`VoskSTTProvider` — STT offline via Vosk (https://alphacephei.com/vosk/).
 
-Único módulo que importa `vosk`/`sounddevice` (ver `services/stt_service.py`
-para o porquê). Captura em streaming direto do microfone para o
-reconhecedor — **nenhum áudio é escrito em disco**, nem mesmo em arquivo
-temporário: os frames PCM vivem só em memória, processados incrementalmente
-pelo `KaldiRecognizer`, e descartados assim que consumidos.
+Desde a v1.3 este é o **fallback leve**, não o engine principal: 53 MB de
+modelo, carga quase instantânea e pouca RAM, para máquinas fracas ou para
+quem não quer baixar o modelo do faster-whisper. Ver
+`services/stt_service.py` para a política de escolha.
 
-**Sample rate (v0.9):** o Vosk precisa de 16kHz, mas nem todo microfone
-expõe 16kHz nativamente — pedir uma taxa que o dispositivo não suporta de
-verdade pode falhar alto (`PortAudioError`) ou, pior, ser aceito e produzir
-áudio distorcido/errado silenciosamente, dependendo do driver. Por isso a
-captura sempre abre o stream na taxa NATIVA do dispositivo
-(`default_samplerate`, via `sd.query_devices`) e resample para 16kHz é
-feito aqui mesmo (`_LinearResampler`, interpolação linear simples — sem
-`numpy`/`scipy`) só quando a taxa nativa é diferente de 16kHz.
+Único módulo que importa `vosk`. A captura de áudio saiu daqui na v1.3 e
+vive em `services/audio_capture.py`, compartilhada com o Whisper.
 
-O nível de áudio (0.0-1.0, para o HUD reagir visualmente) é calculado com
-`array` da biblioteca padrão, não `numpy`/`audioop` — `audioop` foi removido
-do Python 3.13+, e `numpy` seria uma dependência nova só para uma média
-quadrática simples. O callback do PortAudio roda a ~20 Hz (blocos de 50ms),
-dentro do orçamento de "algumas dezenas de updates por segundo".
+--------------------------------------------------------------------------
+CORREÇÃO DA CAUSA RAIZ (v1.3) — por que "Opa, tudo bem?" virava "bem"
+--------------------------------------------------------------------------
+`KaldiRecognizer.AcceptWaveform()` devolve `True` quando o *endpointer* do
+Kaldi decide que uma utterance terminou (tipicamente numa micro-pausa, como
+a vírgula depois de "Opa"). Nesse momento o texto daquela utterance fica
+disponível em `Result()` — e o reconhecedor **reinicia**, começando uma
+utterance nova.
+
+A v1.2 ignorava o retorno de `AcceptWaveform` e lia só `FinalResult()` no
+fim. Ou seja: tudo que o endpointer fechou pelo caminho era descartado, e
+sobrava apenas o último trecho. Uma frase com qualquer pausa interna perdia
+o começo — exatamente o sintoma relatado.
+
+A correção é acumular TODOS os segmentos: cada `AcceptWaveform() is True`
+tem seu `Result()` lido e guardado, e no fim `FinalResult()` acrescenta o
+que restou. Nenhuma palavra é descartada.
 """
 
-import asyncio
 import json
 import logging
-from array import array
-from collections.abc import Callable
 from pathlib import Path
 
-import sounddevice as sd
 import vosk
 
-from services.stt_service import STTStatus, STTUnavailableError, SpeechToTextService
+from services.stt_service import BufferedSTTProvider, STTEngine, STTUnavailableError
 
 logger = logging.getLogger(__name__)
 
-vosk.SetLogLevel(-1)  # silencia o log nativo do Kaldi — ruído irrelevante para o JARVIS
+vosk.SetLogLevel(-1)  # silencia o log nativo do Kaldi — ruído irrelevante aqui
 
-_VOSK_SAMPLE_RATE = 16000
-_BLOCK_SECONDS = 0.05  # ~50ms de bloco -> callback a ~20 Hz, dentro do orçamento de updates/s
-_LEVEL_NORMALIZATION = 9000.0  # divisor empírico para RMS de fala próxima ao microfone
-
-
-def _rms_level(samples: array) -> float:
-    if not samples:
-        return 0.0
-    mean_square = sum(s * s for s in samples) / len(samples)
-    return min(1.0, (mean_square**0.5) / _LEVEL_NORMALIZATION)
+_SAMPLE_RATE = 16000
+# Pedaços de ~0.5s ao alimentar o reconhecedor. Só afeta a granularidade do
+# endpointing interno do Kaldi; o áudio já está todo em memória.
+_FEED_CHUNK_BYTES = 16000
 
 
-class _LinearResampler:
-    """Resample int16 mono por interpolação linear — simples, sem
-    dependência pesada, "boa o suficiente" para reconhecimento de fala (não
-    é reprodução de áudio de alta fidelidade). Mantém a posição fracionária
-    entre blocos para não introduzir um "salto" a cada callback; aceita
-    perder no máximo uma amostra na borda de cada bloco (~inaudível/
-    irrelevante para o reconhecedor em blocos de 50ms)."""
-
-    def __init__(self, from_rate: int, to_rate: int) -> None:
-        self._ratio = from_rate / to_rate
-        self._pos = 0.0
-
-    @property
-    def active(self) -> bool:
-        return self._ratio != 1.0
-
-    def process(self, samples: array) -> array:
-        if not self.active:
-            return samples
-        out = array("h")
-        n = len(samples)
-        if n < 2:
-            return out
-        pos = self._pos
-        while True:
-            index = int(pos)
-            if index + 1 >= n:
-                break
-            frac = pos - index
-            a = samples[index]
-            b = samples[index + 1]
-            out.append(int(a + (b - a) * frac))
-            pos += self._ratio
-        self._pos = pos - n
-        return out
+def _text_of(result_json: str) -> str:
+    try:
+        return str(json.loads(result_json).get("text", "")).strip()
+    except (ValueError, AttributeError):
+        return ""
 
 
-class VoskSTTProvider(SpeechToTextService):
-    def __init__(self, *, model_path: Path) -> None:
+class VoskSTTProvider(BufferedSTTProvider):
+    def __init__(self, *, model_path: Path, device_key: str | None = None, vad=None) -> None:
+        model_path = Path(model_path)
         if not model_path.is_dir():
             raise STTUnavailableError(f"Modelo Vosk não encontrado em: {model_path}")
+        super().__init__(device_key=device_key, vad=vad)
         self._model = vosk.Model(str(model_path))
-        self._device_samplerate = self._detect_device_samplerate()
-        self._microphone_available = self._device_samplerate is not None
+        self._model_path = model_path
 
-        self._stream: sd.RawInputStream | None = None
-        self._recognizer: "vosk.KaldiRecognizer | None" = None
-        self._resampler: _LinearResampler | None = None
-        self._listening = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._on_level: Callable[[float], None] | None = None
-
-    @staticmethod
-    def _detect_device_samplerate() -> int | None:
-        """Consulta o dispositivo de entrada PADRÃO do sistema (nunca um
-        device hardcoded) e devolve a taxa de amostragem NATIVA dele —
-        `None` se não houver microfone."""
-        try:
-            device = sd.query_devices(kind="input")
-        except Exception:
-            return None
-        if device is None:
-            return None
-        rate = device.get("default_samplerate")
-        return int(round(rate)) if rate else _VOSK_SAMPLE_RATE
+    @property
+    def engine(self) -> STTEngine:
+        return STTEngine.VOSK
 
     def is_available(self) -> bool:
         return True
 
     @property
-    def status(self) -> STTStatus:
-        return STTStatus.READY if self._microphone_available else STTStatus.NO_MICROPHONE
+    def model_path(self) -> Path:
+        return self._model_path
 
-    @property
-    def microphone_available(self) -> bool:
-        return self._microphone_available
+    def transcribe_pcm(self, pcm: bytes) -> str:
+        """Transcreve o buffer inteiro acumulando TODOS os segmentos.
 
-    async def start_listening(self, *, on_level: Callable[[float], None] | None = None) -> None:
-        if self._listening:
-            return
-        if not self._microphone_available or self._device_samplerate is None:
-            raise STTUnavailableError("Nenhum microfone disponível.")
+        Ver o cabeçalho do módulo: descartar os `Result()` intermediários era
+        a causa raiz da perda de palavras. Nunca voltar a ignorar o retorno de
+        `AcceptWaveform`."""
+        if not pcm:
+            return ""
 
-        self._loop = asyncio.get_running_loop()
-        self._on_level = on_level
-        self._recognizer = vosk.KaldiRecognizer(self._model, _VOSK_SAMPLE_RATE)
-        self._recognizer.SetWords(False)
-        self._resampler = _LinearResampler(self._device_samplerate, _VOSK_SAMPLE_RATE)
+        recognizer = vosk.KaldiRecognizer(self._model, _SAMPLE_RATE)
+        recognizer.SetWords(False)
 
-        block_size = max(1, int(self._device_samplerate * _BLOCK_SECONDS))
-        try:
-            self._stream = sd.RawInputStream(
-                samplerate=self._device_samplerate,
-                blocksize=block_size,
-                dtype="int16",
-                channels=1,
-                callback=self._on_audio,
-            )
-            self._stream.start()
-        except Exception as exc:
-            self._stream = None
-            self._recognizer = None
-            raise STTUnavailableError(f"Não foi possível abrir o microfone: {exc}") from exc
+        segments: list[str] = []
+        for offset in range(0, len(pcm), _FEED_CHUNK_BYTES):
+            chunk = pcm[offset : offset + _FEED_CHUNK_BYTES]
+            if recognizer.AcceptWaveform(chunk):
+                segment = _text_of(recognizer.Result())
+                if segment:
+                    segments.append(segment)
 
-        self._listening = True
+        final = _text_of(recognizer.FinalResult())
+        if final:
+            segments.append(final)
 
-    def _on_audio(self, indata, frames: int, time_info, status) -> None:
-        # Roda na thread de áudio do PortAudio, não na thread do event loop —
-        # nunca toca estruturas do asyncio/Qt diretamente, só via
-        # `call_soon_threadsafe`.
-        samples = array("h")
-        samples.frombytes(bytes(indata))
-
-        if self._on_level is not None and self._loop is not None:
-            level = _rms_level(samples)
-            try:
-                self._loop.call_soon_threadsafe(self._on_level, level)
-            except RuntimeError:
-                pass  # loop já encerrado (shutdown em andamento)
-
-        if self._recognizer is not None:
-            to_feed = self._resampler.process(samples) if self._resampler is not None else samples
-            if to_feed:
-                self._recognizer.AcceptWaveform(to_feed.tobytes())
-
-    async def stop_and_transcribe(self) -> str:
-        if not self._listening:
-            raise STTUnavailableError("Nenhuma captura de áudio em andamento.")
-        self._listening = False
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._stop_and_finalize)
-
-    def _stop_and_finalize(self) -> str:
-        self._close_stream()
-        result_json = self._recognizer.FinalResult() if self._recognizer is not None else "{}"
-        self._recognizer = None
-        self._resampler = None
-        try:
-            data = json.loads(result_json)
-        except ValueError:
-            data = {}
-        return str(data.get("text", "")).strip()
-
-    async def cancel(self) -> None:
-        if not self._listening:
-            return
-        self._listening = False
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._close_stream)
-        self._recognizer = None
-        self._resampler = None
-
-    def _close_stream(self) -> None:
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                logger.debug("Falha ao fechar o stream de áudio (pode já estar fechado).")
-            self._stream = None
+        return " ".join(segments).strip()
