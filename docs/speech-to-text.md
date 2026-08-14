@@ -131,6 +131,98 @@ O Whisper ainda aplica o VAD interno dele por cima, com
 `min_silence_duration_ms=500` e `speech_pad_ms=400` — padding generoso de
 propósito, para não cortar o ataque da primeira nem o fim da última palavra.
 
+## v1.3.1 — começo de frase e a palavra "JARVIS"
+
+Sintoma relatado: falando **"Opa Jarvis, tudo bem?"** saía **"Vou apagar a
+vizilha e tudo bem?"** — começo destruído, fim correto.
+
+### Diagnóstico
+
+O áudio limpo de TTS **acertava em todas as variantes de parâmetro**,
+inclusive a configuração da v1.3. Isso descartou o modelo e os parâmetros de
+decodificação, e apontou para a captura. Reproduzindo as degradações que um
+microfone real introduz, uma a uma:
+
+| Degradação simulada | Transcrição |
+|---|---|
+| referência (limpo) | `Opa, Jarvis, tudo bem!` |
+| **início cortado 150 ms** | `Opa de arvies, tudo bem.` |
+| **início cortado 300 ms** | `de árvores, tudo bem.` |
+| volume 1% | `Opa, Jarvis, tudo bem!` |
+| **ruído SNR 10 dB** | `contas nases tudo bem.` |
+| reverb (mic distante) | `Opa, Jarvis, tudo bem.` |
+
+Duas causas independentes reproduzem a assinatura exata — **começo destruído,
+"tudo bem" correto**. Volume baixo sozinho não quebra nada (o Whisper
+normaliza), e reverb sozinho também não.
+
+### Causa 1 — o começo era perdido de verdade
+
+`stream.start()` retorna quando o PortAudio aceita o pedido, **não** quando o
+dispositivo começa a entregar amostras. Como o retorno de `start_listening()`
+é o que faz o HUD mostrar `LISTENING`, e `LISTENING` é o sinal para o usuário
+falar, a pessoa começava a falar antes de existir captura.
+
+Correção: `BufferedSTTProvider._wait_for_first_audio()` segura o retorno até o
+primeiro bloco chegar (`AudioCapture.receiving`), com teto de 400 ms e
+`asyncio.sleep` — nunca bloqueia o event loop, e um dispositivo mudo não trava
+a UI.
+
+### Causa 2 — "JARVIS" não é palavra comum em português
+
+Sob ruído, o decoder escolhe qualquer sequência mais provável. A correção usa
+os dois mecanismos que o próprio faster-whisper oferece
+(`services/speech_vocabulary.py`):
+
+- `hotwords="JARVIS"` — enviesa o decoder para o termo;
+- `initial_prompt` — lista de termos do app (chat, conversa, microfone,
+  renomear...), **sem nenhuma frase de exemplo**;
+- meio segundo de silêncio nas duas pontas, para o encoder ter embalo.
+
+**Isto não é substituição de texto.** Nada procura uma saída errada para
+trocar por uma certa — o que o engine devolve é o que sai, e há teste
+(`test_no_text_substitution_anywhere`) que fixa isso.
+
+### Resultado medido (provider real)
+
+| Caso | Antes (v1.3) | Depois (v1.3.1) |
+|---|---|---|
+| limpo | `Opa, Jarvis, tudo bem.` | `Opa, JARVIS, tudo bem.` |
+| início cortado 150 ms | `Opa de arvies, tudo bem.` | `Opa, JARVIS, tudo bem.` |
+| ruído SNR 10 dB | `contas nases tudo bem.` | `Conta, JARVIS, tudo bem.` |
+| volume 10% + SNR 10 dB | `contas, árvores, tudo bem?` | `Conta, JARVIS, tudo bem.` |
+| **acertos de "JARVIS"** | **0/7** | **4/7** |
+
+Frases curtas, que era o pior caso, ficaram exatas: `Jarvis` → `JARVIS`;
+`Oi Jarvis` → `Oi, JARVIS.`; `Jarvis, abre um novo chat` → `JARVIS, abre um
+novo chat.` (antes saía "abrem").
+
+**O que ainda falha:** início cortado em 300 ms e SNR ≤ 5 dB. São casos em que
+o áudio simplesmente não existe ou está enterrado em ruído — nenhum viés de
+decodificação inventa o que não foi gravado. A correção da causa 1 é o que
+evita chegar nesse estado.
+
+### Duas armadilhas encontradas no caminho
+
+1. **Prompt contaminado.** A primeira versão do vocabulário continha a frase
+   de teste literalmente. O resultado (6/6) era ilusório — o modelo podia
+   estar só ecoando o prompt. Refeito com lista de termos: 4/7, medição
+   honesta.
+2. **Eco do prompt em ruído.** Sem `vad_filter`, áudio sem fala fazia o
+   Whisper devolver `"JARVIS. Vocabulario. Vocabulario."`. Uma guarda que
+   descartava saídas parecidas com o prompt "resolveu" — e quebrou `Jarvis`
+   falado sozinho, que é 100% vocabulário. A solução certa era manter
+   `vad_filter=True`, que já é o mecanismo desenhado para isso: silêncio e
+   ruído puro devolvem string vazia.
+
+### Se ainda errar no seu microfone
+
+O dispositivo padrão do sistema aqui é uma webcam (`EMEET SmartCam S600`) —
+microfone distante, SNR baixo, exatamente a faixa que ainda falha. Há 26
+entradas disponíveis nesta máquina, incluindo headsets. **Abra
+`Conta → Voz e microfone` e selecione o microfone que você usa de fato**: a
+escolha é lembrada por conta, por chave estável.
+
 ## Microfone: escolha, persistência e teste
 
 `services/audio_devices.py` enumera **todos** os dispositivos de entrada —

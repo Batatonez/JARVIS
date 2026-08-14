@@ -285,11 +285,22 @@ class AudioCapture:
         self._blocks: list[bytes] = []
         self._active = False
         self._auto_stopped = False
+        self._receiving = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def receiving(self) -> bool:
+        """`True` depois que o PRIMEIRO bloco de áudio chegou de verdade.
+
+        `stream.start()` retornar não significa que o dispositivo já está
+        entregando amostras — no WASAPI há uma latência de arranque. Quem
+        avisa o usuário que pode falar precisa esperar por isto, senão o
+        começo da frase acontece antes de existir captura (v1.3.1)."""
+        return self._receiving
 
     @property
     def auto_stopped(self) -> bool:
@@ -333,6 +344,7 @@ class AudioCapture:
         )
         self._blocks = []
         self._auto_stopped = False
+        self._receiving = False
 
         block_size = max(1, int(capture_rate * _BLOCK_SECONDS))
         try:
@@ -382,6 +394,7 @@ class AudioCapture:
         diretamente — só `call_soon_threadsafe`."""
         samples = array("h")
         samples.frombytes(bytes(indata))
+        self._receiving = True
 
         level = rms_level(samples)
         if self._on_level is not None:
@@ -434,6 +447,7 @@ class AudioCapture:
 
     def _close_stream(self) -> None:
         self._active = False
+        self._receiving = False
         if self._stream is not None:
             try:
                 self._stream.stop()

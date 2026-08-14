@@ -41,6 +41,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Teto da espera pelo primeiro bloco de áudio (v1.3.1 — ver
+# `BufferedSTTProvider._wait_for_first_audio`). 400ms cobre com folga o
+# arranque do WASAPI e continua imperceptível para o usuário; passar disso
+# seria preferir travar a UI a começar a gravar.
+_FIRST_AUDIO_TIMEOUT_SECONDS = 0.4
+_FIRST_AUDIO_POLL_SECONDS = 0.005
+
 
 class STTStatus(Enum):
     READY = "ready"  # engine carregado + microfone presente
@@ -246,6 +253,34 @@ class BufferedSTTProvider(SpeechToTextService):
         except AudioCaptureError as exc:
             raise STTUnavailableError(str(exc)) from exc
         self._capture = capture
+        await self._wait_for_first_audio(capture)
+
+    @staticmethod
+    async def _wait_for_first_audio(capture: AudioCapture) -> None:
+        """Segura o retorno até o primeiro bloco de áudio chegar de verdade.
+
+        **Causa raiz do começo de frase perdido (v1.3.1).** `stream.start()`
+        retorna assim que o PortAudio aceita o pedido, não quando o
+        dispositivo começa a entregar amostras — no WASAPI isso leva algumas
+        dezenas de milissegundos. Como `start_listening()` retornando é o que
+        faz o HUD mostrar LISTENING, e LISTENING é o sinal para o usuário
+        falar, sem esta espera a pessoa começa a falar antes de existir
+        captura. Medido: 150ms perdidos no início já transformam "Opa Jarvis,
+        tudo bem?" em "Opa de arvies, tudo bem".
+
+        Espera ATIVA e limitada: `asyncio.sleep` em passos curtos, nunca
+        bloqueando o event loop, e com teto — se o dispositivo não entregar
+        nada dentro do limite, seguimos assim mesmo. Melhor uma captura
+        possivelmente atrasada do que uma UI travada."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _FIRST_AUDIO_TIMEOUT_SECONDS
+        while not capture.receiving and loop.time() < deadline:
+            await asyncio.sleep(_FIRST_AUDIO_POLL_SECONDS)
+        if not capture.receiving:
+            logger.info(
+                "Microfone não entregou áudio em %.0fms; seguindo mesmo assim.",
+                _FIRST_AUDIO_TIMEOUT_SECONDS * 1000,
+            )
 
     async def stop_and_transcribe(self) -> str:
         capture = self._capture
