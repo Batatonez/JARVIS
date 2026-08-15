@@ -52,13 +52,21 @@ class CommandBarService:
         router: IntentRouter | None = None,
         apps: AppResolver | None = None,
         system: SystemControl | None = None,
+        files=None,
+        skills=None,
     ) -> None:
         """Todas as dependências são injetáveis para os testes usarem um
         Menu Iniciar falso e um controle de sistema fake — nenhum teste abre
-        aplicativo, mexe no volume real ou tira print da máquina."""
+        aplicativo, mexe no volume real ou tira print da máquina.
+
+        `files` (v1.8) é o `FileSearchService`. Opcional: sem ele a busca de
+        arquivos fica indisponível e o resto continua funcionando — é o que
+        acontece antes de existir uma sessão com banco."""
         self._router = router or IntentRouter()
         self._apps = apps or AppResolver()
         self._system = system or SystemControl()
+        self._files = files
+        self._skills = skills
 
     # ------------------------------------------------------------------
 
@@ -71,13 +79,7 @@ class CommandBarService:
             return ActionResult(ok=False, detail="")
 
         if routed.intent is Intent.FILE_SEARCH:
-            # Busca de arquivos é a v1.8. Reconhecer e dizer isso é melhor
-            # que mandar para a IA, que responderia como se tivesse
-            # procurado.
-            return ActionResult(
-                ok=False,
-                detail="Busca de arquivos ainda não está disponível nesta versão.",
-            )
+            return self._search_files(routed.parameters.get("query", ""))
 
         if routed.intent is Intent.REMINDER:
             # Lembretes são a v1.9. Mesmo raciocínio: não prometer o que não
@@ -101,6 +103,33 @@ class CommandBarService:
             )
 
         return self.execute(request, routed=routed)
+
+    def _search_files(self, query: str) -> ActionResult:
+        """Busca de arquivos (v1.8). 100% local: nenhum provider é chamado,
+        nem para ranquear."""
+        if self._files is None:
+            return ActionResult(
+                ok=False, detail="A busca de arquivos ainda não está pronta. Tente de novo em instantes."
+            )
+        results = self._files.search(query)
+        if not results:
+            return ActionResult(ok=True, detail=f"Nenhum arquivo encontrado para \"{query}\".")
+
+        lines = [f"{len(results)} arquivo(s) encontrado(s):"]
+        for item in results:
+            line = f"  {item.name} — {item.parent_label} · {_friendly(item)}"
+            if item.snippet:
+                line += f"\n    …{item.snippet}…"
+            lines.append(line)
+        return ActionResult(
+            ok=True,
+            detail="\n".join(lines),
+            # Quick actions do PRIMEIRO resultado: é o que a pessoa quer
+            # fazer em seguida na esmagadora maioria das vezes, e encher a
+            # tela com quatro botões por arquivo seria ruído.
+            quick_actions=("open_file", "show_in_folder", "copy_path", "summarize_file"),
+            file_handle=results[0].handle,
+        )
 
     def confirm(self, request: ActionRequest) -> ActionResult:
         """Executa uma ação que estava aguardando confirmação.
@@ -256,6 +285,11 @@ class CommandBarService:
 
 
 # ----------------------------------------------------------------------
+
+
+def _friendly(item) -> str:
+    """Data relativa curta para a linha do resultado."""
+    return item.to_view()["modified"]
 
 
 def _safe_eval(expression: str) -> float | None:

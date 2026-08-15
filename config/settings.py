@@ -83,7 +83,7 @@ load_project_env(USER_DATA_ROOT)
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "JARVIS"
-    core_version: str = "1.7.0"
+    core_version: str = "1.8"
 
     project_root: Path = PROJECT_ROOT
     # Memória legacy (pré-contas, v0.1-v0.8) — nunca apagada, só lida uma vez

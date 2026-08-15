@@ -669,9 +669,15 @@ Window {
         anchors.fill: parent
         z: 120
         open: window.commandBarOpen
-        suggestions: bridge.appSuggestions
-        onTextChanged: (text) => bridge.updateCommandSuggestions(text)
+        results: bridge.commandResults
+        quickActions: bridge.quickActions
+        // `onQueryChanged` e não `onTextChanged`: em QML, toda propriedade
+        // gera um sinal `<prop>Changed`, e um sinal chamado `textChanged`
+        // colidiria com o da própria `text`.
+        onQueryChanged: (text) => bridge.updateCommandSuggestions(text)
         onSubmitted: (text) => bridge.submitCommand(text)
+        onActivated: (index) => bridge.activateCommandResult(index)
+        onQuickActionTriggered: (actionId) => bridge.runQuickAction(actionId)
         onConfirmed: { bridge.confirmCommand(); commandBar.confirmationText = "" }
         onCancelled: { bridge.cancelCommand(); window.commandBarOpen = false; commandBar.reset() }
         onCloseRequested: { bridge.cancelCommand(); window.commandBarOpen = false; commandBar.reset() }

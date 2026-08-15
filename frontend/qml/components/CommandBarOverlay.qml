@@ -1,42 +1,90 @@
 import QtQuick
 import "../theme"
 
-// UNIVERSAL COMMAND BAR (v1.7) — Ctrl+K.
+// UNIVERSAL COMMAND BAR (v1.7, navegação de teclado na v1.8) — Ctrl+K.
 //
 // Por que Ctrl+K e não Ctrl+Space: `Ctrl+Space` já é o push-to-talk do
 // microfone desde a v1.3, está documentado no tooltip do MicButton e tem
 // memória muscular. Dois handlers disputando o mesmo atalho seria pior que
 // qualquer ganho de consistência. `Ctrl+K` é a convenção estabelecida de
-// paleta de comandos (VS Code, Slack, Linear, GitHub, Notion), então não há
-// nada novo a aprender.
+// paleta de comandos (VS Code, Slack, Linear, GitHub, Notion).
 //
-// Este arquivo não decide NADA: manda o texto ao Bridge e mostra o que
-// voltar. Não sabe o que é um aplicativo, não classifica risco e não executa
-// ação — ver app/intents.py, app/actions.py e services/system/.
+// Este arquivo não decide NADA sobre o que é um comando: manda o texto ao
+// Bridge e mostra o que voltar. Não sabe o que é aplicativo ou arquivo, não
+// classifica risco e não executa ação — ver app/intents.py, app/actions.py e
+// services/system/.
+//
+// ---------------------------------------------------------------------
+// Seleção: UM estado só (v1.8)
+// ---------------------------------------------------------------------
+// `selectedIndex` é compartilhado por teclado e mouse. Manter dois estados
+// (um para Tab, outro para hover) é como se produz o defeito clássico de
+// paleta de comandos: o mouse destaca um item, a seta desce a partir de
+// outro, e o Enter executa um terceiro.
+//
+// `-1` = nada selecionado. Nesse estado o Enter executa o TEXTO DIGITADO, e
+// o primeiro Tab/seta seleciona o item 0. Isso é o que permite digitar um
+// comando completo e apertar Enter sem nunca tocar na lista.
 Item {
     id: overlay
 
     property bool open: false
-    property var suggestions: []          // [{name, source}]
+    property var results: []              // [{section, label, sublabel, id, kind}]
     property string resultText: ""
     property bool resultOk: true
     property string confirmationText: ""  // não-vazio => aguardando confirmação
+    property int selectedIndex: -1
 
     signal submitted(string text)
-    signal textChanged(string text)
+    signal activated(int index)           // executou um item da lista
+    signal queryChanged(string text)
     signal confirmed()
     signal cancelled()
     signal closeRequested()
+
+    readonly property bool hasResults: results.length > 0
+    readonly property bool hasSelection: selectedIndex >= 0 && selectedIndex < results.length
 
     function reset() {
         input.text = ""
         overlay.resultText = ""
         overlay.confirmationText = ""
+        overlay.selectedIndex = -1
     }
 
     function focusInput() {
         input.forceActiveFocus()
     }
+
+    // Wrap-around nas duas direções: numa lista curta de paleta de comandos,
+    // parar na ponta faz a pessoa achar que a tecla não funcionou. Descer no
+    // último volta ao primeiro, e subir no primeiro vai ao último.
+    function selectNext() {
+        if (!hasResults) return
+        overlay.selectedIndex = (overlay.selectedIndex + 1) % overlay.results.length
+    }
+
+    function selectPrevious() {
+        if (!hasResults) return
+        if (overlay.selectedIndex <= 0)
+            overlay.selectedIndex = overlay.results.length - 1
+        else
+            overlay.selectedIndex -= 1
+    }
+
+    function activateSelection() {
+        if (overlay.hasSelection)
+            overlay.activated(overlay.selectedIndex)
+        else if (input.text.trim().length > 0)
+            overlay.submitted(input.text)
+    }
+
+    // A lista mudou (o usuário digitou mais uma letra): a seleção anterior
+    // apontava para um item que pode nem existir mais. Zerar é a política
+    // previsível — o próximo Tab começa do topo da lista NOVA. Tentar
+    // preservar o item por identidade daria a impressão de seleção
+    // "pulando" enquanto se digita.
+    onResultsChanged: overlay.selectedIndex = -1
 
     visible: opacity > 0
     opacity: open ? 1 : 0
@@ -77,19 +125,41 @@ Item {
                 id: input
                 width: parent.width
                 label: "PERGUNTE OU DIGITE UM COMANDO"
-                onTextChanged: overlay.textChanged(text)
+                onTextChanged: overlay.queryChanged(text)
                 onAccepted: {
                     if (overlay.confirmationText.length > 0)
                         overlay.confirmed()
-                    else if (text.trim().length > 0)
-                        overlay.submitted(text)
+                    else
+                        overlay.activateSelection()
+                }
+
+                // Tab/Shift+Tab são capturados AQUI, no campo de texto, e não
+                // no overlay: com o foco no input (que é onde ele sempre
+                // está), um handler no pai nunca receberia a tecla — o Qt
+                // trata Tab como navegação de foco antes disso.
+                //
+                // `event.accepted = true` só quando há lista: sem resultados,
+                // o Tab volta a ser navegação de foco normal e a tela não
+                // vira uma armadilha de foco (item 9).
+                Keys.onPressed: (event) => {
+                    if (overlay.confirmationText.length > 0)
+                        return
+                    if (event.key === Qt.Key_Tab) {
+                        if (overlay.hasResults) { overlay.selectNext(); event.accepted = true }
+                    } else if (event.key === Qt.Key_Backtab) {
+                        if (overlay.hasResults) { overlay.selectPrevious(); event.accepted = true }
+                    } else if (event.key === Qt.Key_Down) {
+                        if (overlay.hasResults) { overlay.selectNext(); event.accepted = true }
+                    } else if (event.key === Qt.Key_Up) {
+                        if (overlay.hasResults) { overlay.selectPrevious(); event.accepted = true }
+                    }
                 }
             }
 
             Text {
                 width: parent.width
                 visible: overlay.confirmationText.length === 0 && overlay.resultText.length === 0
-                    && overlay.suggestions.length === 0
+                    && !overlay.hasResults
                 text: "Ex.: abrir Spotify · diminuir volume · quanto é 15% de 250 · tira um print"
                 color: Theme.textFaint
                 font.family: Theme.fontFamily
@@ -97,29 +167,65 @@ Item {
                 wrapMode: Text.Wrap
             }
 
-            // --- Sugestões de aplicativo ---
+            // --- Resultados (aplicativos, arquivos, ações) ---
             Column {
+                id: resultList
                 width: parent.width
-                spacing: 2
-                visible: overlay.suggestions.length > 0 && overlay.confirmationText.length === 0
+                spacing: 1
+                visible: overlay.hasResults && overlay.confirmationText.length === 0
 
                 Repeater {
-                    model: overlay.suggestions
+                    model: overlay.results
                     Rectangle {
                         required property var modelData
                         required property int index
-                        width: column.width
-                        height: 30
+
+                        width: resultList.width
+                        height: row.implicitHeight + 10
                         radius: Theme.radiusSmall
-                        color: index === 0 ? Theme.surfacePanel : "transparent"
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
+                        // Destaque discreto: fundo levemente ciano e uma
+                        // borda fina. Sem glow — o item precisa ser óbvio,
+                        // não chamativo.
+                        color: index === overlay.selectedIndex
+                            ? Qt.rgba(0.20, 0.80, 0.95, 0.14) : "transparent"
+                        border.width: index === overlay.selectedIndex ? 1 : 0
+                        border.color: Theme.cyan
+
+                        Column {
+                            id: row
                             x: Theme.spacingSm
-                            text: modelData.name
-                            color: index === 0 ? Theme.textPrimary : Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - Theme.spacingSm * 2
+                            spacing: 1
+
+                            Text {
+                                width: parent.width
+                                text: (modelData.section ? modelData.section + "  ·  " : "") + modelData.label
+                                color: index === overlay.selectedIndex ? Theme.textPrimary : Theme.textSecondary
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                width: parent.width
+                                visible: !!modelData.sublabel
+                                text: modelData.sublabel || ""
+                                color: Theme.textFaint
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 10
+                                elide: Text.ElideMiddle
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            // Hover escreve no MESMO estado que o teclado lê:
+                            // depois de passar o mouse, a próxima seta
+                            // continua a partir dali (item 6).
+                            onEntered: overlay.selectedIndex = index
+                            onClicked: overlay.activated(index)
                         }
                     }
                 }
@@ -175,8 +281,18 @@ Item {
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
             }
+
+            // --- Quick actions do último resultado (v1.8) ---
+            QuickActionRow {
+                width: parent.width
+                actions: overlay.quickActions
+                onTriggered: (actionId) => overlay.quickActionTriggered(actionId)
+            }
         }
     }
+
+    property var quickActions: []
+    signal quickActionTriggered(string actionId)
 
     Keys.onEscapePressed: overlay.closeRequested()
 }

@@ -200,6 +200,9 @@ class ActionResult:
     quick_actions: tuple[str, ...] = ()
     needs_confirmation: bool = False
     request: "ActionRequest | None" = None
+    # v1.8 — referência OPACA ao arquivo a que as quick actions se aplicam.
+    # Handle, nunca caminho: ver services/files/file_search.py::resolve_handle.
+    file_handle: str = ""
 
 
 # Intent -> ActionType. Só o que o executor sabe fazer entra aqui; CHAT,

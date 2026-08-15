@@ -85,6 +85,33 @@ class SystemControl:
             return False, f"Não foi possível abrir {path.name}."
         return True, f"Abrindo {path.stem}"
 
+    def show_in_folder(self, target: str | Path) -> tuple[bool, str]:
+        """Abre o Explorer com o arquivo SELECIONADO (v1.8).
+
+        `explorer /select,"<caminho>"` é a forma documentada pela Microsoft.
+        O caminho é passado como ARGUMENTO de uma lista, nunca concatenado
+        numa string de shell: com `shell=False`, um nome de arquivo contendo
+        aspas, `&` ou `|` é só um nome de arquivo, e não vira comando."""
+        path = Path(target)
+        if not path.exists():
+            return False, f"Não encontrei: {path.name}"
+        if os.name != "nt":
+            return self.open_path(path.parent)
+        try:
+            subprocess.run(
+                ["explorer", f"/select,{path}"],
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.info("Falha ao abrir o Explorer: %s", exc)
+            return False, "Não foi possível abrir a pasta."
+        # O `explorer` devolve código diferente de zero mesmo quando funciona,
+        # então o returncode não é conferido — checar levaria a reportar
+        # falha numa operação que deu certo.
+        return True, f"Mostrando {path.name} na pasta"
+
     def open_url(self, url: str) -> tuple[bool, str]:
         """Abre uma URL no navegador padrão.
 

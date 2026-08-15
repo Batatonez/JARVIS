@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Versão de schema que este código espera. Incrementar SEMPRE que uma
 # migração nova for adicionada a `_MIGRATIONS`.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class MigrationError(Exception):
@@ -380,6 +380,92 @@ def _apply_migration_5(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+# --- v6 — v1.8: índice local de arquivos ----------------------------------
+#
+# O índice NÃO é por usuário: os arquivos são da máquina, e indexar a mesma
+# pasta uma vez por conta duplicaria trabalho e disco sem nenhum ganho. As
+# RAÍZES indexadas, sim, são por conta — cada pessoa escolhe onde o JARVIS
+# pode procurar.
+#
+# `file_content_fts` é uma tabela FTS5 externa (`content=''`): ela guarda só
+# o índice invertido, não uma segunda cópia do texto. Isso importa num
+# assistente pessoal — duplicar o conteúdo de Documents inteiro dentro do
+# banco seria um passivo de disco e de privacidade.
+_MIGRATION_6_DDL = """
+CREATE TABLE IF NOT EXISTS indexed_roots (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    added_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_indexed_roots_unique
+    ON indexed_roots(user_id, path);
+
+CREATE TABLE IF NOT EXISTS file_index (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    -- Nome sem acento e em minúsculas: é por ele que a busca casa, para
+    -- "historia" achar "História" sem depender de o usuário digitar o acento.
+    normalized_name TEXT NOT NULL,
+    extension TEXT NOT NULL DEFAULT '',
+    parent TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    modified_at TEXT NOT NULL,
+    is_directory INTEGER NOT NULL DEFAULT 0,
+    root_path TEXT NOT NULL DEFAULT '',
+    -- Marca da última varredura que viu este arquivo. É o que permite a
+    -- reindexação remover o que sumiu do disco sem apagar a tabela inteira.
+    indexed_at TEXT NOT NULL,
+    content_indexed INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_file_index_extension ON file_index(extension);
+CREATE INDEX IF NOT EXISTS idx_file_index_modified ON file_index(modified_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_index_root ON file_index(root_path);
+
+CREATE TABLE IF NOT EXISTS file_index_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+# FTS5 fica separado porque pode não existir: um SQLite compilado sem a
+# extensão levantaria erro na criação da tabela. Sem FTS5 o JARVIS perde a
+# busca por CONTEÚDO e mantém tudo o mais (nome, metadata) — degradação
+# aceitável, e muito melhor que uma migração que falha e trava o app.
+_MIGRATION_6_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"""
+
+
+def _apply_migration_6(connection: sqlite3.Connection) -> None:
+    for statement in _statements(_MIGRATION_6_DDL):
+        connection.execute(statement)
+    try:
+        for statement in _statements(_MIGRATION_6_FTS):
+            connection.execute(statement)
+    except sqlite3.OperationalError as exc:
+        # Sem FTS5: registra e segue. A busca por conteúdo se desativa
+        # sozinha (ver services/files/file_index.py::content_search_available).
+        logger.warning("FTS5 indisponível; busca por conteúdo ficará desativada. (%s)", exc)
+
+
+def has_fts5(connection: sqlite3.Connection) -> bool:
+    """A busca por conteúdo existe neste banco? Consultado em runtime em vez
+    de presumido: o mesmo código roda em máquinas com SQLite diferentes."""
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_content_fts'"
+    ).fetchone()
+    return row is not None
+
+
 # Ordem importa: índice N aplica a migração que leva o schema de N para N+1.
 _MIGRATIONS = (
     _apply_migration_1,
@@ -387,6 +473,7 @@ _MIGRATIONS = (
     _apply_migration_3,
     _apply_migration_4,
     _apply_migration_5,
+    _apply_migration_6,
 )
 
 

@@ -97,7 +97,13 @@ def read_version() -> str:
     from config.settings import Settings
 
     version = Settings.core_version
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    # Duas OU três partes: `1.8` e `1.8.0` são ambas válidas em PEP 440, e o
+    # projeto usa a forma curta quando a versão não tem patch — acrescentar
+    # um `.0` só por costume mudaria o nome do instalador e o que o usuário
+    # vê. Quem precisa de quatro números é só o recurso de versão do Windows
+    # (ver `write_version_info`), e essa normalização acontece lá, na
+    # fronteira, sem contaminar a versão oficial.
+    if not re.fullmatch(r"\d+\.\d+(\.\d+)?", version):
         raise BuildError(f"Versão inesperada em Settings.core_version: {version!r}")
 
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -212,7 +218,14 @@ def write_version_info(version: str) -> Path:
     `CompanyName` recebe o nome do projeto, não uma empresa: não existe
     pessoa jurídica por trás disto, e inventar uma seria declarar algo falso
     num campo que ferramentas de segurança leem."""
-    major, minor, patch = (int(part) for part in version.split("."))
+    # O recurso VERSIONINFO do Windows exige QUATRO inteiros. Uma versão de
+    # duas partes (`1.8`) é completada com zeros SÓ AQUI: é uma exigência do
+    # formato do sistema operacional, não uma renomeação da versão do
+    # projeto — o instalador continua se chamando `JARVIS-Setup-1.8.exe`.
+    parts = [int(part) for part in version.split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    major, minor, patch = parts[:3]
     content = f"""# Gerado por scripts/build_windows.py — NÃO editar à mão.
 VSVersionInfo(
   ffi=FixedFileInfo(
