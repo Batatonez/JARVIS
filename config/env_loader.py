@@ -39,7 +39,22 @@ _SENSITIVE_ENV_VARS = (
     "GEMINI_API_KEY",
     "MISTRAL_API_KEY",
     "NVIDIA_API_KEY",
+    "CEREBRAS_API_KEY",
     "OLLAMA_API_KEY",
+    # --- Multi-provider fallback (v1.4.0) — não são secrets, mas mudam o
+    # comportamento do Provider Router; removidas do processo de teste pelo
+    # mesmo motivo de JARVIS_FREE_ONLY/JARVIS_PROVIDER_MAX_TOKENS abaixo:
+    # nenhum teste pode herdar configuração real do desenvolvedor.
+    "JARVIS_NVIDIA_ENABLED",
+    "JARVIS_NVIDIA_MODELS",
+    "JARVIS_GEMINI_ENABLED",
+    "JARVIS_GEMINI_MODELS",
+    "JARVIS_GROQ_ENABLED",
+    "JARVIS_GROQ_MODELS",
+    "JARVIS_CEREBRAS_ENABLED",
+    "JARVIS_CEREBRAS_MODELS",
+    "JARVIS_MISTRAL_ENABLED",
+    "JARVIS_MISTRAL_MODELS",
     "JARVIS_SMTP_HOST",
     "JARVIS_SMTP_PORT",
     "JARVIS_SMTP_USERNAME",

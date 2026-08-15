@@ -8,9 +8,9 @@ Construir um assistente pessoal com aplicativo próprio para Windows, capaz de c
 
 ## Estado atual
 
-🚧 **JARVIS v1.2 (em andamento) — Chat UX + Security Hardening.** Sobre a v1.1: Markdown renderizado de verdade no chat (com sanitização — HTML embutido nunca é interpretado), botões de **Copiar** e **Regenerar** por mensagem, horário exibido no fuso local (era UTC), e correção de causa dos modais tortos/cortados. Auditoria de segurança de 20 pontos classificada em [`docs/security-checklist.md`](docs/security-checklist.md).
+✅ **JARVIS v1.4.0 — Multi-Provider AI Fallback.** O `ProviderRouter` deixou de falar só com a OpenRouter: agora é uma cadeia de fallback entre 6 providers (OpenRouter → NVIDIA NIM → Gemini → Groq → Cerebras → Mistral), cada um com sua própria lista curada e validada de modelos gratuitos. Um provider indisponível (rate limit, timeout, 5xx, modelo esgotado) faz o router avançar sozinho para o próximo, sem intervenção; um erro de configuração real (credencial inválida, request malformado) **nunca** é mascarado tentando outro provider. `free_only` continua obrigatório em toda a cadeia — nenhuma rota paga é escolhida silenciosamente, mesmo para os providers que não reportam custo por chamada. Detalhes completos, catálogo validado por chamada real e limitações honestas em [`docs/providers.md`](docs/providers.md).
 
-**Ainda não entregue nesta versão** (ver relatório): anexos de arquivo, Intelligence Mode (INSTANT/MEDIUM/HIGH), rename de chat e títulos automáticos.
+Versões anteriores (chat UX, contas, 2FA, STT com Faster Whisper, etc.) seguem funcionando sem alteração — ver `git log` e os documentos em [`docs/`](docs/) para o histórico completo.
 
 
 

@@ -24,6 +24,7 @@ class ProviderId(str, Enum):
     GEMINI = "gemini"
     MISTRAL = "mistral"
     NVIDIA = "nvidia"
+    CEREBRAS = "cerebras"  # v1.4.0
     ANTHROPIC = "anthropic"
 
 
@@ -165,6 +166,11 @@ class AIExecutionResult:
     message_id: str | None = None
     duration_ms: float = 0.0
     error: str | None = None
+    # v1.4.0 — telemetria de fallback (item 26). Preenchidos só pelo
+    # `ProviderRouter`, nunca por um `AIProvider` individual: um provider não
+    # sabe quantos candidatos vieram antes dele na cadeia.
+    fallback_used: bool = False
+    fallback_count: int = 0
 
     @property
     def has_visible_content(self) -> bool:

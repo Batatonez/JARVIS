@@ -107,36 +107,42 @@ class UnavailableAIService(AIService):
 def create_ai_service(settings: "Settings") -> AIService:
     """Decide qual AIService usar a partir da configuração:
 
-        OPENROUTER_API_KEY   -> ProviderRouterAIService (v1.0, via ProviderRouter)
-        ANTHROPIC_API_KEY    -> ClaudeAgentProvider
-        nenhuma das duas     -> UnavailableAIService
+        qualquer provider do Provider Router configurado
+                              -> ProviderRouterAIService (v1.0+, via ProviderRouter)
+        ANTHROPIC_API_KEY     -> ClaudeAgentProvider
+        nenhum dos dois       -> UnavailableAIService
 
-    OpenRouter tem precedência porque é o caminho que passa pelo
-    `ProviderRouter` — a camada que dá ao JARVIS controle real de
-    provider/modelo/custo (`free_only`), ver docs/providers.md. O
-    ClaudeAgentProvider continua como estava para quem tiver uma chave
-    Anthropic e nenhuma de OpenRouter.
+    **v1.4.0**: "qualquer provider configurado" deixou de ser só
+    `OPENROUTER_API_KEY` — o registry sempre inclui OpenRouter, NVIDIA,
+    Gemini, Groq, Cerebras e Mistral (cada um decide sozinho se está
+    configurado; ver `services/providers/registry.py::build_default_registry`),
+    então uma conta que só tenha `NVIDIA_API_KEY`, por exemplo, já basta para
+    o JARVIS conversar de verdade pelo Provider Router. A construção do
+    registry não toca rede — só checar `configured_provider_ids()` depois é
+    que revela se sobrou algum candidato.
+
+    O ClaudeAgentProvider continua como estava para quem tiver uma chave
+    Anthropic e nenhuma das seis do Provider Router.
 
     Nunca levanta exceção: se a configuração existir mas o provider falhar
     ao ser construído, cai de volta para `UnavailableAIService` (fallback
-    seguro) em vez de derrubar o JARVIS. Nenhuma conexão é feita aqui —
-    construir um provider não toca rede.
+    seguro) em vez de derrubar o JARVIS.
     """
-    if settings.has_openrouter_api_key():
-        try:
-            from services.provider_ai_service import ProviderRouterAIService
-            from services.providers.registry import build_default_registry
-            from services.providers.router import ProviderRouter
+    try:
+        from services.provider_ai_service import ProviderRouterAIService
+        from services.providers.registry import build_default_registry
+        from services.providers.router import ProviderRouter
 
-            router = ProviderRouter(build_default_registry())
+        router = ProviderRouter(build_default_registry())
+        if router.configured_provider_ids():
             return ProviderRouterAIService(
                 router,
                 free_only=settings.free_only,
                 max_tokens=settings.provider_max_tokens,
                 timeout_s=settings.provider_timeout_s,
             )
-        except Exception:
-            logger.exception("Falha ao inicializar o ProviderRouter; tentando os demais providers.")
+    except Exception:
+        logger.exception("Falha ao inicializar o ProviderRouter; tentando os demais providers.")
 
     if not settings.has_anthropic_api_key():
         return UnavailableAIService()

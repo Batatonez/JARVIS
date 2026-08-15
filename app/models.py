@@ -56,6 +56,15 @@ class AppErrorCode(Enum):
     # v1.3.2 — provider respondeu com metadata válida mas sem conteúdo
     # visível. Metadata nunca vira mensagem de assistant.
     EMPTY_PROVIDER_RESPONSE = "empty_provider_response"
+    # --- Multi-provider fallback (v1.4.0 — ver services/providers/router.py) ---
+    # Toda a cadeia (OpenRouter -> NVIDIA -> Gemini -> Groq -> Cerebras ->
+    # Mistral) foi tentada e nenhum candidato produziu resposta utilizável.
+    FALLBACK_EXHAUSTED = "fallback_exhausted"
+    # Erro NÃO-recuperável de um provider (credencial inválida, request
+    # malformado, resposta fora do schema esperado) — nunca mascarado por
+    # fallback; sinal de configuração quebrada ou bug, não de instabilidade
+    # transitória (ver services/providers/exceptions.py::NonRecoverableProviderError).
+    PROVIDER_CONFIGURATION_ERROR = "provider_configuration_error"
     # --- Verificação de e-mail (v1.0 — ver services/email_verification_service.py) ---
     EMAIL_SERVICE_NOT_CONFIGURED = "email_service_not_configured"
     VERIFICATION_CODE_INVALID = "verification_code_invalid"

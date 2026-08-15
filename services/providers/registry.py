@@ -1,26 +1,25 @@
-"""`ProviderRegistry` — inventário de providers conhecidos. Só OpenRouter
-tem uma classe real registrada nesta etapa (ver item 10 do pedido); os
-demais aparecem como `ProviderDescriptor(status=NOT_IMPLEMENTED)`, sem
-nenhuma classe/import associado — existem só para o HUD/CLI já poderem
-listar "o que existe hoje vs. o que está planejado" sem `if`s espalhados
-pelo projeto."""
+"""`ProviderRegistry` — inventário de providers conhecidos.
+
+**v1.4.0**: os 6 providers da cadeia de fallback (OpenRouter, NVIDIA,
+Gemini, Groq, Cerebras, Mistral) têm classe real e são **sempre**
+registrados por `build_default_registry()` — cada um decide sozinho se está
+"configurado" (`is_configured()`), que já cobre tanto "sem API key" quanto
+"desativado via `JARVIS_<PROVIDER>_ENABLED=0`" (ver
+`services/providers/openai_compatible.py`). Isso simplifica o registry: ele
+nunca precisa saber SE um provider está habilitado, só ITERAR os que estão
+`is_configured()`.
+
+Anthropic continua como entrada de inventário apenas (`NOT_IMPLEMENTED` no
+sentido específico de "não integrado a ESTE router") — tem uma integração
+real separada (`services/ai_service.py` + `services/claude_agent_provider.py`),
+fora de escopo desta versão (ver `docs/ruflo-integration.md`)."""
 
 from services.providers.base import AIProvider
 from services.providers.types import ProviderDescriptor, ProviderId, ProviderStatus
 
-# Providers sem implementação real nesta etapa (item 10/14 do pedido) — só
-# entradas de inventário, nunca instanciados.
-_PLANNED_PROVIDER_IDS = (
-    ProviderId.GROQ,
-    ProviderId.GEMINI,
-    ProviderId.MISTRAL,
-    ProviderId.NVIDIA,
-    # Anthropic já tem uma integração real no JARVIS (services/ai_service.py
-    # + services/claude_agent_provider.py) — mas não está conectada a ESTE
-    # Provider Router ainda ("não alterar", item 10). Aparece aqui como
-    # NOT_IMPLEMENTED no sentido específico de "não integrado a este router".
-    ProviderId.ANTHROPIC,
-)
+# Providers sem implementação real nesta camada — só entrada de inventário,
+# nunca instanciado.
+_PLANNED_PROVIDER_IDS = (ProviderId.ANTHROPIC,)
 
 
 class ProviderRegistry:
@@ -68,12 +67,31 @@ class ProviderRegistry:
 
 def build_default_registry(*, register_openrouter: bool = True) -> ProviderRegistry:
     """Registry "de produção" — só chama construtores reais (sem tocar
-    rede: `AIProvider.__init__` nunca conecta nada). `register_openrouter`
-    existe para os testes poderem construir um registry vazio sem depender
-    de `OPENROUTER_API_KEY`."""
+    rede: nenhum `AIProvider.__init__` conecta nada, cada um só lê variável
+    de ambiente). `register_openrouter=False` existe para os testes
+    construírem um registry vazio de OpenRouter sem depender de
+    `OPENROUTER_API_KEY` — os 5 providers novos sempre são registrados
+    (cada um `is_configured()==False` sozinho quando sem key, então não
+    afeta nenhum teste que espera "nenhum provider configurado")."""
     registry = ProviderRegistry()
     if register_openrouter:
         from services.providers.openrouter_provider import OpenRouterProvider
 
         registry.register(OpenRouterProvider())
+
+    # v1.4.0 — cadeia de fallback. Import local (mesmo padrão de sempre
+    # neste módulo): mantém o import de topo do arquivo livre de qualquer
+    # dependência pesada, e cada provider só é importado quando o registry
+    # de produção é de fato construído.
+    from services.providers.cerebras_provider import CerebrasProvider
+    from services.providers.gemini_provider import GeminiProvider
+    from services.providers.groq_provider import GroqProvider
+    from services.providers.mistral_provider import MistralProvider
+    from services.providers.nvidia_provider import NvidiaProvider
+
+    registry.register(NvidiaProvider())
+    registry.register(GeminiProvider())
+    registry.register(GroqProvider())
+    registry.register(CerebrasProvider())
+    registry.register(MistralProvider())
     return registry

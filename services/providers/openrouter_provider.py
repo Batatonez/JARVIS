@@ -1,8 +1,7 @@
-"""`OpenRouterProvider` — primeiro (e único, nesta etapa) provider real do
-Provider Router. Fala com a OpenRouter Chat Completions API
-(`POST /v1/chat/completions`, formato compatível com OpenAI) via `urllib`
-da stdlib (mesma escolha de `services/vosk_model_manager.py`: evita somar
-`requests`/`httpx`/`aiohttp` como dependência nova só para isto).
+"""`OpenRouterProvider` — primeiro provider real do Provider Router, e o
+**primeiro da cadeia de fallback** (v1.4.0, ver `docs/providers.md`). Fala
+com a OpenRouter Chat Completions API (`POST /v1/chat/completions`, formato
+compatível com OpenAI).
 
 Lê a API key de `OPENROUTER_API_KEY` no ambiente — nunca de um arquivo
 versionado, nunca de configuração em código (ver `docs/providers.md`,
@@ -14,27 +13,37 @@ de tocar rede.
 só do que a API respondeu (`data["model"]`, `data["usage"]["cost"]` quando
 presente) — nunca do que foi pedido. `ProviderRouter` (não este módulo) é
 quem decide se isso é aceitável para um pedido `free_only=True`.
-"""
 
-import asyncio
+**v1.4.0** — o transporte HTTP e o parsing de mensagem passaram a viver em
+`services/providers/http_support.py`, compartilhados com os providers novos
+(NVIDIA/Groq/Cerebras/Mistral, que falam o mesmo dialeto). `HttpResponse`,
+`HttpTransport`, `parse_message` e o comportamento de `OpenRouterProvider`
+continuam exportados exatamente como antes — nenhum teste existente precisou
+mudar."""
+
 import json
 import logging
 import os
 import time
 import urllib.error
-import urllib.request
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 
 from services.providers.base import AIProvider
-from services.providers.exceptions import ProviderNotConfiguredError, ProviderUnavailableError, RateLimitedError
+from services.providers.exceptions import ProviderError
+from services.providers.http_support import (
+    DEFAULT_USER_AGENT,
+    HttpResponse,
+    HttpTransport,
+    classify_transport_exception,
+    parse_openai_chat_message,
+    raise_for_status,
+    urllib_transport,
+)
 from services.providers.types import (
     AIExecutionResult,
     CostInfo,
     ModelCapability,
     ModelId,
     ProviderId,
-    ProviderMessage,
     ProviderStatus,
     RouteRequest,
     UsageInfo,
@@ -42,7 +51,19 @@ from services.providers.types import (
 
 logger = logging.getLogger(__name__)
 
-# Rota agregada gratuita da OpenRouter. **NÃO é mais a rota padrão** (v1.3.2).
+# Reexportados por compatibilidade — `tests/test_provider_router.py` e
+# outros módulos importam estes símbolos diretamente daqui desde a v1.0/v1.3.
+__all__ = [
+    "AGGREGATE_FREE_MODEL",
+    "FREE_CHAT_MODELS",
+    "FREE_MODEL",
+    "HttpResponse",
+    "HttpTransport",
+    "OpenRouterProvider",
+    "parse_message",
+]
+
+# Rota agregada gratuita da OpenRouter. **NÃO é a rota padrão** (v1.3.2).
 #
 # CAUSA RAIZ DO BUG "User Safety: safe": `openrouter/free` é um agregador CEGO
 # — ele sorteia qualquer modelo do pool gratuito a cada chamada. Nesse pool
@@ -71,8 +92,9 @@ AGGREGATE_FREE_MODEL: ModelId = "openrouter/free"
 #   - `*-omni-*-reasoning` -> gastou o orçamento inteiro em raciocínio e
 #     devolveu `content: null` na captura real
 #
-# Esta lista envelhece: quando um slug sair do ar, o próximo da tupla assume
-# (ver o retry de `ProviderRouterAIService`). Revisar ao atualizar a versão.
+# Esta lista envelhece: quando um slug sair do ar, o `ProviderRouter` avança
+# para o próximo (v1.4.0 — cadeia de fallback central). Revisar ao atualizar
+# a versão.
 FREE_CHAT_MODELS: tuple[ModelId, ...] = (
     "openai/gpt-oss-20b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -86,34 +108,7 @@ FREE_MODEL: ModelId = FREE_CHAT_MODELS[0]
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api"
 _DEFAULT_TIMEOUT_S = 60.0
-
-
-@dataclass(frozen=True)
-class HttpResponse:
-    status: int
-    body: str
-
-
-# Assinatura do transporte HTTP — injetável para testes (nunca bate em rede
-# de verdade em `tests/`, ver `tests/fakes.py::FakeHttpTransport`).
-HttpTransport = Callable[[str, dict[str, str], bytes, float], Awaitable[HttpResponse]]
-
-
-async def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> HttpResponse:
-    """Transporte HTTP real (produção) — `urllib.request` bloqueante, rodado
-    fora do event loop via `run_in_executor` (mesmo padrão de
-    `services/vosk_model_manager.py`)."""
-
-    def _do_request() -> HttpResponse:
-        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=timeout_s) as response:
-                return HttpResponse(status=response.status, body=response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            return HttpResponse(status=exc.code, body=exc.read().decode("utf-8", errors="replace"))
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _do_request)
+_LABEL = "OpenRouter"
 
 
 class OpenRouterProvider(AIProvider):
@@ -131,7 +126,7 @@ class OpenRouterProvider(AIProvider):
         # explicitamente via este mesmo parâmetro.
         self._api_key = api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY")
         self._base_url = base_url.rstrip("/")
-        self._transport = transport or _urllib_transport
+        self._transport = transport or urllib_transport
 
     def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -152,6 +147,8 @@ class OpenRouterProvider(AIProvider):
         return ProviderStatus.AVAILABLE if self.is_configured() else ProviderStatus.NOT_CONFIGURED
 
     async def execute(self, request: RouteRequest, *, model: ModelId) -> AIExecutionResult:
+        from services.providers.exceptions import ProviderNotConfiguredError
+
         if not self.is_configured():
             raise ProviderNotConfiguredError("OPENROUTER_API_KEY não está definida no ambiente.")
 
@@ -178,8 +175,9 @@ class OpenRouterProvider(AIProvider):
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/anthropics/claude-code",
+            "HTTP-Referer": "https://github.com/Batatonez/JARVIS",
             "X-Title": "JARVIS",
+            "User-Agent": DEFAULT_USER_AGENT,
         }
 
         started_at = time.monotonic()
@@ -190,29 +188,35 @@ class OpenRouterProvider(AIProvider):
                 json.dumps(payload).encode("utf-8"),
                 request.timeout_s or _DEFAULT_TIMEOUT_S,
             )
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise ProviderUnavailableError(f"Falha de rede ao chamar a OpenRouter: {exc}") from exc
+        except ProviderError:
+            raise  # já classificado por um transporte de teste, repassa intacto
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            # Deliberadamente estreito: só exceções de REDE viram
+            # `ProviderTimeoutError`/`ProviderConnectionError` (recuperáveis,
+            # o loop de fallback pode avançar). Um `TypeError`/`AttributeError`
+            # nosso — um bug de verdade — precisa atravessar sem ser
+            # reclassificado como "provider indisponível", senão o fallback
+            # esconderia exatamente o tipo de erro que precisa aparecer
+            # (item 18 do escopo v1.4.0; coberto por
+            # `tests/test_provider_router_v14.py::test_36_internal_bug_is_never_masked_by_fallback`).
+            raise classify_transport_exception(exc, provider_label=_LABEL) from exc
 
         duration_ms = (time.monotonic() - started_at) * 1000
 
-        if response.status == 429:
-            raise RateLimitedError("OpenRouter respondeu 429 (rate limit).")
-        if response.status >= 500:
-            raise ProviderUnavailableError(f"OpenRouter respondeu {response.status} (erro do servidor).")
-        if response.status >= 400:
-            return AIExecutionResult(
-                success=False,
-                provider=self.id,
-                requested_model=model,
-                served_model=None,
-                error=f"OpenRouter API error {response.status}: {response.body[:400]}",
-                duration_ms=duration_ms,
-            )
+        # v1.4.0 — toda falha HTTP vira exceção estruturada (nunca mais um
+        # `AIExecutionResult(success=False)`): é isso que permite o
+        # `ProviderRouter` decidir "recuperável, tenta o próximo" vs.
+        # "não-recuperável, propaga na hora" de forma uniforme com os
+        # outros 5 providers (item 6 do escopo: um 401 da OpenRouter nunca
+        # pode ser silenciosamente engolido tentando a NVIDIA em seguida).
+        raise_for_status(response.status, response.body, provider_label=_LABEL)
 
         try:
             data = json.loads(response.body)
         except json.JSONDecodeError as exc:
-            raise ProviderUnavailableError("Resposta da OpenRouter não é JSON válido.") from exc
+            from services.providers.exceptions import InvalidProviderResponseError
+
+            raise InvalidProviderResponseError("Resposta da OpenRouter não é JSON válido.") from exc
 
         message = parse_message(data)
 
@@ -228,7 +232,13 @@ class OpenRouterProvider(AIProvider):
             success=True,
             provider=self.id,
             requested_model=model,
-            served_model=data.get("model"),
+            # Cai para o `model` pedido se o campo vier ausente/nulo — a
+            # OpenRouter sempre ecoa `model` na prática (confirmado em
+            # captura real), então isto nunca muda o comportamento em
+            # produção; só torna a verificação free-only por allowlist
+            # robusta mesmo que um backend específico omita o campo, igual
+            # ao que já vale para NVIDIA/Groq/Cerebras/Mistral (item 15).
+            served_model=data.get("model") or model,
             output=message.visible_content,
             reasoning=message.reasoning,
             refusal=message.refusal,
@@ -239,53 +249,13 @@ class OpenRouterProvider(AIProvider):
         )
 
 
-def parse_message(data: dict) -> ProviderMessage:
-    """Separa a mensagem do provider por natureza (v1.3.2).
-
-    A resposta compatível com OpenAI carrega, no MESMO objeto `message`,
-    coisas de naturezas diferentes — e só `content` é destinado ao usuário.
-    Captura real de `nvidia/nemotron-3-nano-omni-...:free`:
-
-        {"role": "assistant", "content": null, "reasoning": "Okay, the user
-         is greeting me in Portuguese...", "refusal": null}
-
-    Ou seja: `content` pode ser `null` mesmo com `success=True` e usage
-    contabilizado. Antes isso virava string vazia sem distinção; agora o
-    chamador consegue perguntar `has_visible_content` e tratar como resposta
-    ausente em vez de mostrar nada (ou, pior, cair em algum fallback que
-    aproveitasse o raciocínio).
-
-    `content` também pode vir como LISTA de partes (`[{"type": "text",
-    "text": "..."}]`) em alguns backends — as partes de texto são
-    concatenadas na ordem, e qualquer parte que não seja texto é ignorada.
-    """
-    choices = data.get("choices") or []
-    if not choices:
-        return ProviderMessage()
-    message = choices[0].get("message") or {}
-
-    return ProviderMessage(
-        visible_content=_coerce_text(message.get("content")),
-        reasoning=_coerce_text(message.get("reasoning")),
-        refusal=message.get("refusal") or None,
-    )
-
-
-def _coerce_text(value) -> str:
-    """`None`, string, ou lista de partes -> string. Nunca levanta."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = []
-        for part in value:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                parts.append(part["text"])
-        return "".join(parts)
-    return ""
+def parse_message(data: dict):
+    """Alias de compatibilidade — a implementação real (compartilhada com
+    NVIDIA/Groq/Cerebras/Mistral desde a v1.4.0) mora em
+    `services/providers/http_support.py::parse_openai_chat_message`. Ver lá
+    para a explicação completa (inclusive o caso `content: null` capturado
+    de verdade que motivou a separação `visible_content`/`reasoning`)."""
+    return parse_openai_chat_message(data)
 
 
 def _normalize_cost(usage_raw: dict) -> CostInfo | None:

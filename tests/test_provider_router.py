@@ -161,6 +161,17 @@ class OpenRouterProviderTests(unittest.IsolatedAsyncioTestCase):
         # Exatamente o bug documentado: pedimos free, o "provider" (fake)
         # devolve um served_model pago sem cost=0 — o router tem que
         # detectar isso e recusar, nunca devolver como sucesso silencioso.
+        #
+        # `preferred_model` força um candidato só (`_execute_single`), para
+        # testar a verificação em isolamento — sem isso, o `execute()` sem
+        # candidato explícito percorreria TODOS os modelos gratuitos da
+        # OpenRouter (v1.4.0: cadeia de fallback) e o fake transport, que
+        # devolve a mesma resposta para qualquer modelo pedido, faria todos
+        # falharem da mesma forma, terminando em `FallbackExhaustedError`
+        # em vez de `NoFreeModelAvailableError` diretamente — mesma causa
+        # raiz, exceção externa diferente. Ver
+        # `tests/test_provider_router_v14.py::FallbackChainTests` para o
+        # comportamento de cadeia completa.
         transport = FakeHttpTransport(
             response=_openrouter_success_response(model="anthropic/claude-sonnet-5", cost=None)
         )
@@ -169,7 +180,7 @@ class OpenRouterProviderTests(unittest.IsolatedAsyncioTestCase):
         router = ProviderRouter(registry)
 
         with self.assertRaises(NoFreeModelAvailableError):
-            await router.execute(RouteRequest(prompt="oi", free_only=True))
+            await router.execute(RouteRequest(prompt="oi", free_only=True, preferred_model=FREE_MODEL))
 
     async def test_free_only_raises_when_provider_reports_nonzero_cost(self) -> None:
         transport = FakeHttpTransport(response=_openrouter_success_response(model=FREE_MODEL, cost=0.002))
@@ -178,7 +189,7 @@ class OpenRouterProviderTests(unittest.IsolatedAsyncioTestCase):
         router = ProviderRouter(registry)
 
         with self.assertRaises(NoFreeModelAvailableError):
-            await router.execute(RouteRequest(prompt="oi", free_only=True))
+            await router.execute(RouteRequest(prompt="oi", free_only=True, preferred_model=FREE_MODEL))
 
     async def test_free_only_accepts_confirmed_free_response(self) -> None:
         transport = FakeHttpTransport(response=_openrouter_success_response(model=FREE_MODEL, cost=0.0))
@@ -204,7 +215,13 @@ class OpenRouterProviderTests(unittest.IsolatedAsyncioTestCase):
             await router.select(RouteRequest(prompt="oi", free_only=True))
 
     # 10. provider registry ---------------------------------------------------
-    def test_registry_lists_openrouter_and_planned_providers(self) -> None:
+    def test_registry_lists_openrouter_and_still_planned_providers(self) -> None:
+        """v1.4.0: só a OpenRouter está registrada manualmente aqui — os 5
+        providers novos (NVIDIA/Gemini/Groq/Cerebras/Mistral) têm classe real
+        (ver `tests/test_provider_router_v14.py` para os testes deles) mas
+        não entram num `ProviderRegistry()` vazio construído à mão; só
+        Anthropic continua fora do inventário deste router por desenho
+        (integração separada, ver `services/ai_service.py`)."""
         registry = ProviderRegistry()
         registry.register(OpenRouterProvider(api_key="sk-or-fake", transport=FakeHttpTransport()))
 
@@ -212,8 +229,11 @@ class OpenRouterProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(descriptors[ProviderId.OPENROUTER].status, ProviderStatus.AVAILABLE)
         self.assertIn(FREE_MODEL, descriptors[ProviderId.OPENROUTER].free_models)
-        for planned in (ProviderId.GROQ, ProviderId.GEMINI, ProviderId.MISTRAL, ProviderId.NVIDIA, ProviderId.ANTHROPIC):
-            self.assertEqual(descriptors[planned].status, ProviderStatus.NOT_IMPLEMENTED)
+        self.assertEqual(descriptors[ProviderId.ANTHROPIC].status, ProviderStatus.NOT_IMPLEMENTED)
+        # Não registrados neste registry manual -> simplesmente ausentes,
+        # nunca aparecem como NOT_IMPLEMENTED (eles TÊM implementação real).
+        for implemented in (ProviderId.GROQ, ProviderId.GEMINI, ProviderId.MISTRAL, ProviderId.NVIDIA, ProviderId.CEREBRAS):
+            self.assertNotIn(implemented, descriptors)
 
     def test_registry_reports_not_configured_without_key(self) -> None:
         registry = ProviderRegistry()
@@ -267,7 +287,11 @@ class ProviderRouterHealthTests(unittest.IsolatedAsyncioTestCase):
         health = await router.health()
 
         self.assertEqual(health[ProviderId.OPENROUTER], ProviderStatus.AVAILABLE)
-        self.assertEqual(health[ProviderId.GROQ], ProviderStatus.NOT_IMPLEMENTED)
+        # Anthropic continua fora do inventário deste router por desenho
+        # (integração separada); GROQ etc. têm classe real desde a v1.4.0 e
+        # simplesmente não aparecem quando não registrados neste registry
+        # manual (ver `test_registry_lists_openrouter_and_still_planned_providers`).
+        self.assertEqual(health[ProviderId.ANTHROPIC], ProviderStatus.NOT_IMPLEMENTED)
 
 
 if __name__ == "__main__":

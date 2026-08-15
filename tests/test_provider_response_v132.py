@@ -203,14 +203,21 @@ class SafetyMetadataNeverBecomesAnAnswerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EmptyResponseTests(unittest.IsolatedAsyncioTestCase):
-    async def test_empty_visible_content_triggers_one_retry_then_fails(self) -> None:
-        """Item 3: UM retry, não um laço."""
+    async def test_empty_visible_content_exhausts_the_whole_chain_then_fails(self) -> None:
+        """v1.4.0: o retry estreito de "uma nova tentativa" da v1.3.2
+        generalizou para a cadeia de fallback inteira, agora centralizada no
+        `ProviderRouter` (ver `tests/test_provider_router_v14.py` para os
+        testes completos do motor de fallback). Cada modelo gratuito de
+        chat da OpenRouter é tentado exatamente uma vez; nenhum é repetido
+        (não é um laço)."""
         transport = _transport_for(REASONING_ONLY_RESPONSE)
         service = _service(transport)
         await service.start()
         with self.assertRaises(AIServiceUnavailableError):
             await service.ask("oi")
-        self.assertEqual(transport.calls["n"], 2, "exatamente uma nova tentativa")
+        expected_models = len(OpenRouterProvider(api_key="k").free_models())
+        self.assertEqual(transport.calls["n"], expected_models)
+        self.assertEqual(len(set(transport.requested_models)), expected_models, "nenhum modelo repetido")
 
     async def test_retry_uses_a_different_free_model(self) -> None:
         transport = _transport_for(REASONING_ONLY_RESPONSE)
@@ -218,7 +225,8 @@ class EmptyResponseTests(unittest.IsolatedAsyncioTestCase):
         await service.start()
         with self.assertRaises(AIServiceUnavailableError):
             await service.ask("oi")
-        self.assertEqual(len(set(transport.requested_models)), 2)
+        expected_models = len(OpenRouterProvider(api_key="k").free_models())
+        self.assertEqual(len(set(transport.requested_models)), expected_models)
 
     async def test_retry_never_uses_a_paid_model(self) -> None:
         """Item 3: `free_only` continua obrigatório no retry."""
