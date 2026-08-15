@@ -52,6 +52,20 @@ REQUIRED_ARTIFACTS = (
     "_internal/frontend/qml/theme/qmldir",
 )
 
+# Reconhecimento de fala. É OPCIONAL: um build sem STT abre e funciona, só
+# sem voz. Mas quando o pacote está presente no ambiente de build, ele
+# precisa entrar COMPLETO — código e dados.
+#
+# Bug real encontrado ao validar o installer: `collect_submodules` trazia os
+# módulos de `faster_whisper` mas não o `assets/silero_vad_v6.onnx` que ele
+# carrega por caminho. O import passava e a primeira transcrição quebrava —
+# invisível para qualquer verificação que só teste import.
+STT_ARTIFACTS = {
+    "faster_whisper": ("_internal/faster_whisper/assets/silero_vad_v6.onnx",),
+    "ctranslate2": ("_internal/ctranslate2/ctranslate2.dll",),
+    "vosk": ("_internal/vosk",),
+}
+
 # Padrões de credencial procurados no artefato final. `sk-`/`nvapi-`/`gsk_`
 # são prefixos reais de chave dos providers usados pelo projeto.
 SECRET_PATTERNS = (
@@ -126,10 +140,20 @@ def find_inno_setup() -> Path | None:
     on_path = shutil.which("iscc")
     if on_path:
         return Path(on_path)
-    for candidate in (
+
+    candidates = [
         Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
         Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
-    ):
+    ]
+    # Instalação POR USUÁRIO. O `winget install JRSoftware.InnoSetup` usa este
+    # caminho por padrão — e como ele não põe o ISCC no PATH, procurar só em
+    # `Program Files` faz o build reportar "Inno Setup não encontrado" numa
+    # máquina onde ele acabou de ser instalado com sucesso.
+    local_programs = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_programs:
+        candidates.append(Path(local_programs) / "Programs" / "Inno Setup 6" / "ISCC.exe")
+
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
     return None
@@ -156,7 +180,17 @@ def _safe_rmtree(target: Path) -> None:
         raise BuildError(f"Recusando limpar um caminho fora do projeto: {target}")
     if target.name not in ("build", "dist"):
         raise BuildError(f"Recusando limpar um diretório que não é de build: {target}")
-    shutil.rmtree(target)
+    try:
+        shutil.rmtree(target)
+    except PermissionError as exc:
+        # Causa quase sempre a mesma: um JARVIS.exe do build anterior ainda
+        # está aberto e segura uma DLL. O traceback cru de `shutil` aponta
+        # para um `qgif.dll` qualquer e não diz o que fazer.
+        raise BuildError(
+            f"Não foi possível limpar {target}: {exc.filename or target}\n"
+            "Provavelmente há uma instância do JARVIS aberta segurando um arquivo do build.\n"
+            "Feche o JARVIS (ou: taskkill /IM JARVIS.exe /F) e rode o build de novo."
+        ) from exc
     print(f"  limpo: {target}")
 
 
@@ -240,6 +274,36 @@ def verify_artifacts() -> None:
         )
     for name in REQUIRED_ARTIFACTS:
         print(f"  ok: {name}")
+
+    verify_stt()
+
+
+def verify_stt() -> None:
+    """Confere que cada componente de STT presente no ambiente de build
+    entrou COMPLETO no artefato.
+
+    Ausência do pacote no ambiente é apenas um aviso — o build segue e o app
+    abre sem voz. Presença no ambiente com ausência no artefato é ERRO: é um
+    componente pela metade, que só falha na máquina do usuário."""
+    incomplete: list[str] = []
+    for package, expected in STT_ARTIFACTS.items():
+        try:
+            __import__(package)
+        except Exception:
+            print(f"  STT: {package} não está no ambiente de build — build seguirá sem voz por ele")
+            continue
+        for relative in expected:
+            if not (STANDALONE_DIR / relative).exists():
+                incomplete.append(f"{package}: falta {relative}")
+            else:
+                print(f"  STT ok: {relative}")
+
+    if incomplete:
+        raise BuildError(
+            "Componente de STT entrou incompleto no artefato:\n  "
+            + "\n  ".join(incomplete)
+            + "\nO app importaria o pacote e falharia na primeira transcrição."
+        )
 
 
 def audit_artifacts() -> None:

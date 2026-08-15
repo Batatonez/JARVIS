@@ -141,6 +141,58 @@ class BuildConfigurationTests(unittest.TestCase):
         spec = (PACKAGING_DIR / "jarvis.spec").read_text(encoding="utf-8")
         self.assertIn("frontend/qml", spec)
 
+    def test_spec_collects_data_files_of_optional_packages(self) -> None:
+        """Regressão de um bug real encontrado ao validar o installer:
+        `collect_submodules` trazia o código de `faster_whisper` mas não o
+        `silero_vad_v6.onnx` que ele carrega por caminho. O import passava e
+        a primeira transcrição quebrava — invisível para verificação que só
+        testa import."""
+        spec = (PACKAGING_DIR / "jarvis.spec").read_text(encoding="utf-8")
+        self.assertIn("collect_data_files", spec)
+        self.assertIn("optional_datas", spec)
+
+    def test_build_script_verifies_stt_completeness(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_build_windows", PROJECT_ROOT / "scripts" / "build_windows.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertIn("faster_whisper", module.STT_ARTIFACTS)
+        self.assertTrue(
+            any("silero" in item for item in module.STT_ARTIFACTS["faster_whisper"]),
+            "o modelo de VAD precisa ser verificado explicitamente",
+        )
+
+    def test_build_script_finds_per_user_inno_setup(self) -> None:
+        """`winget install JRSoftware.InnoSetup` instala em
+        `%LOCALAPPDATA%\\Programs` e não põe o ISCC no PATH — procurar só em
+        `Program Files` reportaria "não encontrado" numa máquina onde ele
+        acabou de ser instalado."""
+        source = (PROJECT_ROOT / "scripts" / "build_windows.py").read_text(encoding="utf-8")
+        self.assertIn("LOCALAPPDATA", source)
+        self.assertIn("Inno Setup 6", source)
+
+    def test_ci_validates_voice_dependencies(self) -> None:
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("faster_whisper", workflow)
+        self.assertIn("ctranslate2", workflow)
+
+    def test_ci_needs_no_secrets_to_build(self) -> None:
+        """Se este workflow um dia precisar de segredo para BUILDAR, é sinal
+        de que algo secreto vazou para dentro do artefato."""
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("secrets.OPENROUTER", workflow)
+        self.assertNotIn("secrets.NVIDIA", workflow)
+        self.assertNotIn("secrets.GEMINI", workflow)
+        self.assertNotIn("JARVIS_SMTP", workflow)
+
     def test_spec_excludes_tests_and_avoids_upx(self) -> None:
         spec = (PACKAGING_DIR / "jarvis.spec").read_text(encoding="utf-8")
         self.assertIn('"tests"', spec)

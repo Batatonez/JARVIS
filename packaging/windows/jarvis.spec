@@ -36,7 +36,7 @@ transformaria uma degradação em bloqueio.
 import os
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 # `SPECPATH` é injetado pelo PyInstaller — `__file__` não existe num .spec.
 PROJECT_ROOT = Path(SPECPATH).resolve().parent.parent
@@ -59,18 +59,31 @@ VERSION_FILE = _version_file if _version_file.is_file() else None
 
 
 def _optional(package: str):
-    """`(submódulos, DLLs)` de um pacote opcional, ou vazio se ele não estiver
-    instalado. Nunca levanta: ausência de extra não pode derrubar o build."""
+    """`(submódulos, DLLs, dados)` de um pacote opcional, ou vazio se ele não
+    estiver instalado. Nunca levanta: ausência de extra não pode derrubar o
+    build.
+
+    Os DADOS são coletados junto com o código porque, sem eles, o pacote
+    entra pela metade e falha só em runtime. Caso concreto encontrado ao
+    validar o installer: `faster_whisper` embarca
+    `assets/silero_vad_v6.onnx` (1,2 MB), o modelo de detecção de voz que
+    ele carrega por caminho. Com só os submódulos, o import funciona e a
+    primeira transcrição quebra — o pior tipo de falha de packaging, porque
+    passa por toda verificação que só olha import."""
     try:
         __import__(package)
     except Exception:
         print(f"[jarvis.spec] Extra opcional ausente, seguindo sem ele: {package}")
-        return [], []
+        return [], [], []
     try:
-        return collect_submodules(package), collect_dynamic_libs(package)
+        return (
+            collect_submodules(package),
+            collect_dynamic_libs(package),
+            collect_data_files(package),
+        )
     except Exception as exc:  # pragma: no cover - depende do ambiente de build
         print(f"[jarvis.spec] Falha ao coletar {package} ({exc}); seguindo sem ele.")
-        return [], []
+        return [], [], []
 
 
 hidden_imports: list[str] = [
@@ -83,11 +96,13 @@ hidden_imports: list[str] = [
     "win32timezone",
 ]
 binaries: list[tuple] = []
+optional_datas: list[tuple] = []
 
 for package in ("faster_whisper", "ctranslate2", "av", "vosk", "sounddevice", "pyttsx3"):
-    modules, libs = _optional(package)
+    modules, libs, package_datas = _optional(package)
     hidden_imports += modules
     binaries += libs
+    optional_datas += package_datas
 
 # `pyttsx3` escolhe o driver por nome em runtime (`pyttsx3.drivers.sapi5`) —
 # invisível para a análise estática.
@@ -105,6 +120,8 @@ datas = [
 env_example = PROJECT_ROOT / ".env.example"
 if env_example.is_file():
     datas.append((str(env_example), "."))
+
+datas += optional_datas
 
 a = Analysis(
     [str(PROJECT_ROOT / "frontend" / "__main__.py")],

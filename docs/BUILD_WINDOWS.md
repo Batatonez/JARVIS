@@ -11,12 +11,14 @@ e não precisa de nada disto.
 | Python 3.10+ | rodar o projeto e o build | já necessário para desenvolvimento |
 | Dependências do projeto | PySide6 e o resto | `pip install -r requirements.txt` |
 | PyInstaller | gera o standalone | `pip install -r requirements-build.txt` |
-| Inno Setup 6 | gera o `JARVIS-Setup.exe` | <https://jrsoftware.org/isdl.php> |
+| Inno Setup 6 | gera o `JARVIS-Setup.exe` | `winget install JRSoftware.InnoSetup` |
 
 O Inno Setup **não** é um pacote Python e não é instalado pelo pip. Sem ele o
 build ainda funciona: produz o standalone e avisa que o installer foi pulado.
 
-Se o `ISCC.exe` não estiver num dos caminhos padrão, aponte:
+O `winget` instala em `%LOCALAPPDATA%\Programs\Inno Setup 6` e **não** coloca
+o `ISCC.exe` no PATH — o build procura lá automaticamente. Se estiver em
+outro lugar, aponte:
 
 ```bash
 set INNO_SETUP_ISCC=C:\caminho\para\ISCC.exe
@@ -54,7 +56,8 @@ console, ele não é o modo que o installer espera.
 4. Gera `packaging/windows/version_info.txt` (metadados de versão do Windows)
    a partir da versão oficial. Este arquivo é gerado, não versionado.
 5. Roda o PyInstaller com `packaging/windows/jarvis.spec`.
-6. Verifica que os arquivos essenciais entraram no artefato — inclusive o QML.
+6. Verifica que os arquivos essenciais entraram no artefato — inclusive o QML
+   e os componentes de STT.
 7. Audita o artefato procurando credencial e arquivo proibido.
 8. Compila o installer com o Inno Setup.
 9. Calcula os SHA-256.
@@ -225,6 +228,32 @@ spec.
 **STT não funciona no build.** `faster_whisper`, `ctranslate2` e `av` são
 opcionais: se não estavam instalados no ambiente de build, o spec os pula e
 avisa. O app abre normalmente sem voz — por desenho, não por acidente.
+
+Quando eles ESTÃO no ambiente, o passo 6 exige que tenham entrado
+**completos** e falha o build caso contrário. Isso existe por causa de um bug
+real: `collect_submodules` trazia o código de `faster_whisper` mas não o
+`assets/silero_vad_v6.onnx` que ele carrega por caminho — o import passava e a
+primeira transcrição quebrava, sem nenhum sinal em tempo de build.
+
+## Validação real executada (v1.6.0)
+
+O que abaixo foi verificado executando de verdade, não por inspeção:
+
+| Item | Resultado |
+|---|---|
+| `JARVIS-Setup-1.6.0.exe` compilado | sim, 178 MB, Inno Setup 6.7.3 |
+| Instalação sem admin | sim (`IsInRole(Administrator) = False`) |
+| Caminho com espaços | `...\Programs\Test User Space\JARVIS` |
+| Atalho no Menu Iniciar | criado e removido no uninstall |
+| Atalho no Desktop (opcional) | criado com `/TASKS=desktopicon` |
+| Entrada em Installed Apps | criada em `HKCU`, removida no uninstall |
+| App abre | janela real, sem console |
+| Encerramento limpo | fecha pela janela, exit 0 |
+| Banco em user-data | sim; nenhum `.db` na pasta de instalação |
+| Update por cima | banco byte-a-byte idêntico, login/prefs/chats preservados |
+| Uninstall | binários, atalhos e registro removidos; dados preservados |
+| Reinstalar após uninstall | dados continuam acessíveis |
+| Segredos no installer | nenhum (varredura no binário de 178 MB) |
 
 **O antivírus reclama.** Esperado num binário não assinado. Ver "Assinatura
 de código". O build não usa UPX nem obfuscação justamente para reduzir isso.

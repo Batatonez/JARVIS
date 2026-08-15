@@ -44,6 +44,30 @@ jobs:
       - name: Rodar a suíte de testes
         run: python -m unittest discover -s tests
 
+      # O runner é uma máquina limpa, sem política de Controle de Aplicativo
+      # bloqueando DLL — é aqui que o build oficial COM voz é produzido. Se
+      # um destes pacotes não importar no runner, o build sairia sem STT em
+      # silêncio; falhar aqui torna isso visível.
+      - name: Validar dependências de voz (STT/TTS)
+        shell: pwsh
+        run: |
+          python - <<'PY'
+          import sys
+          required = ["faster_whisper", "ctranslate2", "av", "vosk", "sounddevice", "pyttsx3"]
+          missing = []
+          for name in required:
+              try:
+                  __import__(name)
+                  print(f"ok: {name}")
+              except Exception as exc:
+                  missing.append(f"{name}: {type(exc).__name__}: {exc}")
+          if missing:
+              print("\nFALTANDO no runner (o build oficial sairia sem voz):")
+              for item in missing:
+                  print("  " + item)
+              sys.exit(1)
+          PY
+
       # O Inno Setup 6 já vem pré-instalado nos runners `windows-latest`.
       # O passo abaixo apenas confirma e expõe o caminho — se um dia sair da
       # imagem, o build falha aqui com uma mensagem clara em vez de gerar um
