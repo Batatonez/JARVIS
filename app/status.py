@@ -38,6 +38,11 @@ def build_status_snapshot(
     memory_available = (
         core.memory_service.is_profile_available() or core.memory_service.is_preferences_available()
     )
+    # v1.5.0 — rota realmente usada na última resposta. `last_result_summary`
+    # só existe no `ProviderRouterAIService` (o placeholder e o provider do
+    # Claude Agent SDK não têm cadeia de fallback), então `getattr` com default
+    # é o caminho honesto: ausência vira vazio, nunca um provider inventado.
+    summary = getattr(ai, "last_result_summary", None) or {}
     return StatusSnapshot(
         core_version=core.settings.core_version,
         state=core.state.value,
@@ -55,4 +60,8 @@ def build_status_snapshot(
         voice_input_active=voice.listening if voice else False,
         voice_output_active=voice.speaking if voice else False,
         voice_output_enabled=voice.voice_output_enabled if voice else False,
+        ai_provider=str(summary.get("provider") or ""),
+        ai_model=str(summary.get("served_model") or summary.get("requested_model") or ""),
+        ai_fallback_used=bool(summary.get("fallback_used")),
+        ai_fallback_count=int(summary.get("fallback_count") or 0),
     )

@@ -43,6 +43,7 @@ from services.email_verification_repository import EmailVerificationRepository, 
 from services.email_verification_service import EmailVerificationService, VerificationRequestResult
 from services.context_builder import sanitize_context
 from services.local_database import connect
+from services.login_throttle import AuthChannel, LoginThrottle, LoginThrottled
 from services.long_term_memory import (
     LongTermMemoryRepository,
     extract_memories,
@@ -50,8 +51,14 @@ from services.long_term_memory import (
 )
 from services.memory_service import MemoryService
 from services.reauth import ReauthGuard
+from services.provider_status_service import ProviderStatusService
 from services.recovery_code_repository import RecoveryCodeRepository
-from services.session_repository import SessionInfo, SessionRepository
+from services.security_event_repository import (
+    SecurityEvent,
+    SecurityEventRepository,
+    SecurityEventType,
+)
+from services.session_repository import SessionInfo, SessionRepository, describe_current_device
 from services.two_factor_service import TwoFactorEnrollment, TwoFactorService, TwoFactorStatus
 from services.user_repository import (
     AccountLockedError,
@@ -113,8 +120,16 @@ class AccountManager:
         self._memories = LongTermMemoryRepository(self._conn)
         self._user_settings = UserSettingsRepository(self._conn)
         self._recovery_codes = RecoveryCodeRepository(self._conn)
+        self._security_events = SecurityEventRepository(self._conn)
         self._ai_service_factory = ai_service_factory
         self._voice_service_factory = voice_service_factory
+
+        # v1.5.0 — limitação de tentativas por IDENTIFICADOR, complementar ao
+        # backoff por conta que já existe no `UserRepository` desde a v1.0. É
+        # esta camada que cobre tentativas contra identificadores que não
+        # existem (password spraying), que antes não eram contadas por
+        # ninguém. Ver `services/login_throttle.py`.
+        self.login_throttle = LoginThrottle()
 
         email = email_service or create_email_service(settings)
         self.verification = EmailVerificationService(
@@ -127,9 +142,15 @@ class AccountManager:
         # ajustes que o usuário está fazendo, e invalidar (logout, troca de
         # senha) fecha a janela para todos de uma vez.
         self.reauth = ReauthGuard()
-        self.account = AccountService(self._users, self._sessions, reauth=self.reauth)
+        self.account = AccountService(
+            self._users, self._sessions, reauth=self.reauth, events=self._security_events
+        )
         self.two_factor = TwoFactorService(
-            self._users, self._recovery_codes, reauth=self.reauth, issuer=settings.app_name
+            self._users,
+            self._recovery_codes,
+            reauth=self.reauth,
+            issuer=settings.app_name,
+            events=self._security_events,
         )
         self.email_change = EmailChangeService(
             PendingEmailChangeRepository(self._conn),
@@ -233,10 +254,23 @@ class AccountManager:
         mesmo tempo.
 
         Levanta `InvalidCredentialsError` (mesma mensagem para conta
-        inexistente e senha errada), `AccountLockedError` (cooldown de força
-        bruta) ou `TwoFactorRequiredError` (item 52: a senha bateu, mas nenhuma
-        sessão é criada antes do segundo fator)."""
-        user = self._users.authenticate(identifier=identifier, password=password)
+        inexistente e senha errada), `AccountLockedError`/`LoginThrottled`
+        (cooldown de força bruta) ou `TwoFactorRequiredError` (item 52: a senha
+        bateu, mas nenhuma sessão é criada antes do segundo fator).
+
+        v1.5.0 — o throttle por identificador é consultado ANTES de tocar o
+        banco: uma tentativa já bloqueada não chega a custar um hash scrypt, e
+        identificadores inexistentes (que não têm linha para contar falhas)
+        passam a ser limitados como qualquer outro."""
+        self.login_throttle.check(identifier, AuthChannel.PASSWORD)
+
+        try:
+            user = self._users.authenticate(identifier=identifier, password=password)
+        except InvalidCredentialsError:
+            self.login_throttle.register_failure(identifier, AuthChannel.PASSWORD)
+            raise
+
+        self.login_throttle.register_success(identifier, AuthChannel.PASSWORD)
 
         if self._users.is_totp_enabled(user.id):
             self._pending_two_factor_user_id = user.id
@@ -258,9 +292,25 @@ class AccountManager:
                 AppErrorCode.INTERNAL_ERROR, "Nenhum login aguardando verificação."
             )
 
+        # O throttle do segundo fator é contado por `user_id` (não pelo
+        # identificador digitado): nesta etapa a conta já é conhecida, e o
+        # orçamento de tentativas é separado do da senha — errar o código do
+        # autenticador não deve consumir tentativas de login.
+        try:
+            self.login_throttle.check(user_id, AuthChannel.TWO_FACTOR)
+        except LoginThrottled as exc:
+            self._security_events.record(
+                user_id=user_id,
+                event_type=SecurityEventType.LOGIN_BLOCKED,
+                metadata={"channel": AuthChannel.TWO_FACTOR.value},
+            )
+            return None, AppError(AppErrorCode.TWO_FACTOR_RATE_LIMITED, str(exc))
+
         error = self.two_factor.verify(user_id=user_id, code=code)
         if error is not None:
+            self.login_throttle.register_failure(user_id, AuthChannel.TWO_FACTOR)
             return None, error
+        self.login_throttle.register_success(user_id, AuthChannel.TWO_FACTOR)
 
         user = self._users.get_user(user_id)
         if user is None:
@@ -282,6 +332,12 @@ class AccountManager:
     async def _establish_session(self, user: User) -> User:
         token = self._sessions.create_session(user.id)
         session_store.save_token(self.settings.session_token_path, token)
+        platform_name, device_label = describe_current_device()
+        self._security_events.record(
+            user_id=user.id,
+            event_type=SecurityEventType.LOGIN_SUCCEEDED,
+            metadata={"platform": platform_name, "device_label": device_label},
+        )
         await self._open_session(user, token)
         return user
 
@@ -697,15 +753,27 @@ class AccountManager:
                 sent=False,
                 error=AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada."),
             )
-        return await self.email_change.request_change(
+        result = await self.email_change.request_change(
             user_id=self._current_user.id, new_email=new_email, force=force
         )
+        if result.error is None:
+            self._security_events.record(
+                user_id=self._current_user.id,
+                event_type=SecurityEventType.EMAIL_CHANGE_REQUESTED,
+                # Só o e-mail MASCARADO: o endereço completo já está na conta,
+                # e repeti-lo no log de atividade só espalharia dado pessoal.
+                metadata={"masked_email": mask_email(new_email)},
+            )
+        return result
 
     async def confirm_email_change(self, code: str) -> AppError | None:
         if self._current_user is None:
             return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
         error = await self.email_change.confirm_change(user_id=self._current_user.id, code=code)
         if error is None:
+            self._security_events.record(
+                user_id=self._current_user.id, event_type=SecurityEventType.EMAIL_CHANGED
+            )
             self._current_user = self._users.get_user(self._current_user.id) or self._current_user
         return error
 
@@ -738,6 +806,13 @@ class AccountManager:
             user_id=self._current_user.id, code=code
         )
         if error is None:
+            # Só a QUANTIDADE de códigos gerados. Os códigos em si nunca
+            # tocam o log de atividade — nem hasheados.
+            self._security_events.record(
+                user_id=self._current_user.id,
+                event_type=SecurityEventType.TWO_FACTOR_ENABLED,
+                metadata={"codes_remaining": len(codes or [])},
+            )
             self._current_user = self._users.get_user(self._current_user.id) or self._current_user
         return codes, error
 
@@ -753,6 +828,9 @@ class AccountManager:
             return AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
         error = self.two_factor.disable(user_id=self._current_user.id, code=code)
         if error is None:
+            self._security_events.record(
+                user_id=self._current_user.id, event_type=SecurityEventType.TWO_FACTOR_DISABLED
+            )
             self._current_user = self._users.get_user(self._current_user.id) or self._current_user
         return error
 
@@ -771,6 +849,62 @@ class AccountManager:
         return self.account.log_out_other_sessions(
             user_id=self._current_user.id, current_token=self._current_session_token
         )
+
+    async def revoke_session(self, session_id: str) -> tuple[bool, AppError | None]:
+        """Encerra UMA sessão da conta atual (v1.5.0). Devolve
+        `(deslogou_este_dispositivo, erro)`.
+
+        O `user_id` vem de `self._current_user` — o frontend escolhe QUAL
+        sessão, nunca DE QUEM. Se a sessão encerrada for a deste dispositivo,
+        o logout acontece aqui mesmo: deixar a UI acreditando que continua
+        logada com um token já revogado seria pior do que não ter o botão."""
+        if self._current_user is None:
+            return False, AppError(AppErrorCode.INTERNAL_ERROR, "Nenhuma conta autenticada.")
+        was_current, error = self.account.revoke_session(
+            user_id=self._current_user.id,
+            session_id=session_id,
+            current_token=self._current_session_token,
+        )
+        if error is not None:
+            return False, error
+        if was_current:
+            # A sessão no banco já morreu; `logout()` cuida do resto (encerra
+            # a Application Layer, apaga o token local, limpa a RAM).
+            await self.logout()
+        return was_current, None
+
+    # --- Atividade de segurança (v1.5) ---
+
+    def list_security_events(self, *, limit: int = 50, offset: int = 0) -> list[SecurityEvent]:
+        if self._current_user is None:
+            return []
+        return self.account.list_security_events(
+            user_id=self._current_user.id, limit=limit, offset=offset
+        )
+
+    # --- Disponibilidade de identidade no cadastro (v1.5) ---
+    #
+    # Estes dois são os ÚNICOS métodos públicos daqui que funcionam sem conta
+    # autenticada — por necessidade: quem está criando conta ainda não tem
+    # uma. Eles não revelam nada além de "este username/e-mail está livre",
+    # que é justamente o que o cadastro precisa dizer para ser usável.
+
+    def check_username_available(self, username: str) -> tuple[bool, str]:
+        return self.account.check_username_available(username)
+
+    def check_email_available(self, email: str) -> tuple[bool, str]:
+        return self.account.check_email_available(email)
+
+    # --- Providers de IA (v1.5) ---
+
+    def provider_status(self) -> ProviderStatusService | None:
+        """`ProviderStatusService` da sessão atual, ou `None` quando não há IA
+        roteada por `ProviderRouter` (placeholder sem chave configurada, ou
+        Claude Agent SDK). Construído sob demanda: a tela de providers é
+        aberta raramente, e o serviço não guarda estado que precise viver
+        junto com a sessão."""
+        router = getattr(getattr(self.core, "ai_service", None), "_router", None)
+        return ProviderStatusService(router) if router is not None else None
 
     # --- Exclusão da conta ---
 
@@ -797,6 +931,14 @@ class AccountManager:
                 AppErrorCode.CONFIRMATION_MISMATCH,
                 "Digite DELETE para confirmar a exclusão da conta.",
             )
+
+        # Registrado antes de apagar: o `ON DELETE CASCADE` leva junto os
+        # eventos desta conta, então este registro existe só para o intervalo
+        # em que a exclusão ainda pode falhar (e aí ele permanece, mostrando
+        # que houve uma tentativa).
+        self._security_events.record(
+            user_id=user.id, event_type=SecurityEventType.ACCOUNT_DELETION_STARTED
+        )
 
         # Encerra a Application Layer antes de apagar: sem isto, o consumidor
         # de eventos poderia tentar persistir uma mensagem numa conta que já

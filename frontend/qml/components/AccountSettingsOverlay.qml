@@ -19,6 +19,12 @@ Item {
     property var pendingEmailChange: null
     property string errorText: ""
     property string successText: ""
+    // v1.5 — atividade de segurança e providers de IA. Ambos chegam prontos e
+    // já sanitizados do Bridge: nenhuma API key, token ou segredo atravessa
+    // esta fronteira, e este arquivo não sabe o que é uma credencial.
+    property var securityEvents: []      // [{id, type, label, at, detail}]
+    property var providers: []           // [{id, label, enabled, configured, configurationLabel, health, healthLabel, models, position}]
+    property bool providerTestActive: false
 
     signal confirmPasswordRequested(string password)
     signal displayNameChangeRequested(string displayName)
@@ -31,11 +37,15 @@ Item {
     signal recoveryRegenerateRequested(string code)
     signal sessionsRefreshRequested()
     signal logOutOthersRequested()
+    signal sessionRevokeRequested(string sessionId)
+    signal securityEventsRefreshRequested()
+    signal providersRefreshRequested()
+    signal providerTestRequested(string providerId)
     signal deleteAccountRequested(string password, string confirmation, string code)
     signal closeRequested()
 
     property int _tab: 0
-    readonly property var _tabs: ["PROFILE", "SECURITY", "SESSIONS", "DANGER ZONE"]
+    readonly property var _tabs: ["PROFILE", "SECURITY", "SESSIONS", "ACTIVITY", "AI PROVIDERS", "DANGER ZONE"]
 
     function _reset() {
         errorText = ""
@@ -135,7 +145,12 @@ Item {
                 // --- Faixa de reautenticação (item 45) ---
                 Rectangle {
                     width: parent.width
-                    visible: overlay._tab > 0
+                    // Só nas abas que executam operação sensível. ACTIVITY e
+                    // AI PROVIDERS são leitura (e um teste de conexão que não
+                    // toca a conta), então pedir a senha ali seria ritual sem
+                    // função — e ritual sem função ensina o usuário a digitar
+                    // a senha sem pensar.
+                    visible: overlay._tab === 1 || overlay._tab === 2 || overlay._tab === 5
                     height: reauthColumn.implicitHeight + Theme.spacingSm * 2
                     radius: Theme.radiusSmall
                     color: Theme.surfacePanel
@@ -422,6 +437,16 @@ Item {
                                     font.pixelSize: 10
                                     wrapMode: Text.Wrap
                                 }
+                                // v1.5 — encerrar UMA sessão. Encerrar a atual
+                                // desloga na hora (o backend faz o logout); o
+                                // rótulo diz isso antes de o usuário clicar.
+                                ActionButton {
+                                    label: modelData.isCurrent
+                                        ? "ENCERRAR ESTA SESSÃO (SAIR)" : "ENCERRAR SESSÃO"
+                                    emphasis: false
+                                    tint: Theme.danger
+                                    onClicked: overlay.sessionRevokeRequested(modelData.id)
+                                }
                             }
                         }
                     }
@@ -441,11 +466,173 @@ Item {
                     }
                 }
 
+                // ----------------------------------------------- ACTIVITY
+                Column {
+                    width: parent.width
+                    spacing: Theme.spacingSm
+                    visible: overlay._tab === 3
+
+                    Text {
+                        width: parent.width
+                        text: "Eventos de segurança desta conta. Nenhuma senha, token, chave de API "
+                            + "ou código de recuperação é registrado aqui."
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+
+                    Text {
+                        width: parent.width
+                        visible: overlay.securityEvents.length === 0
+                        text: "Nenhum evento registrado ainda."
+                        color: Theme.textFaint
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 12
+                    }
+
+                    Repeater {
+                        model: overlay.securityEvents
+                        Rectangle {
+                            required property var modelData
+                            width: content.width
+                            height: eventColumn.implicitHeight + Theme.spacingSm * 2
+                            radius: Theme.radiusSmall
+                            color: Theme.surfacePanel
+                            border.width: 1
+                            border.color: modelData.type === "login_blocked"
+                                ? Theme.warning : Theme.borderSubtle
+
+                            Column {
+                                id: eventColumn
+                                x: Theme.spacingSm
+                                y: Theme.spacingSm
+                                width: parent.width - Theme.spacingSm * 2
+                                spacing: 3
+                                Text {
+                                    width: parent.width
+                                    text: modelData.label
+                                    color: modelData.type === "login_blocked"
+                                        ? Theme.warning : Theme.textPrimary
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: modelData.at
+                                        + (modelData.detail ? "  ·  " + modelData.detail : "")
+                                    color: Theme.textFaint
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 10
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+                    }
+
+                    ModalButtonRow {
+                        ActionButton {
+                            label: "ATUALIZAR"
+                            emphasis: false
+                            onClicked: overlay.securityEventsRefreshRequested()
+                        }
+                    }
+                }
+
+                // -------------------------------------------- AI PROVIDERS
+                Column {
+                    width: parent.width
+                    spacing: Theme.spacingSm
+                    visible: overlay._tab === 4
+
+                    Text {
+                        width: parent.width
+                        text: "Ordem de fallback (somente leitura — definida no .env). Chaves de API "
+                            + "nunca são exibidas: apenas se estão presentes ou ausentes."
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+
+                    Repeater {
+                        model: overlay.providers
+                        Rectangle {
+                            required property var modelData
+                            width: content.width
+                            height: providerColumn.implicitHeight + Theme.spacingSm * 2
+                            radius: Theme.radiusSmall
+                            color: Theme.surfacePanel
+                            border.width: 1
+                            border.color: modelData.health === "ready" ? Theme.success
+                                : modelData.health === "auth_failed" ? Theme.danger
+                                : modelData.health === "rate_limited" ? Theme.warning
+                                : Theme.borderSubtle
+
+                            Column {
+                                id: providerColumn
+                                x: Theme.spacingSm
+                                y: Theme.spacingSm
+                                width: parent.width - Theme.spacingSm * 2
+                                spacing: 4
+
+                                Text {
+                                    width: parent.width
+                                    text: modelData.position + ".  " + modelData.label
+                                    color: modelData.enabled ? Theme.textPrimary : Theme.textFaint
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: modelData.configurationLabel + "  ·  " + modelData.healthLabel
+                                    color: modelData.health === "ready" ? Theme.success
+                                        : modelData.health === "auth_failed" ? Theme.danger
+                                        : Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 11
+                                    wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    width: parent.width
+                                    visible: modelData.models.length > 0
+                                    text: modelData.models.join(", ")
+                                    color: Theme.textFaint
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 10
+                                    wrapMode: Text.Wrap
+                                }
+                                ActionButton {
+                                    label: "TEST CONNECTION"
+                                    emphasis: false
+                                    // Desabilitado quando não há o que testar:
+                                    // sem chave ou desativado, a chamada seria
+                                    // garantidamente inútil.
+                                    enabled: modelData.configured && modelData.enabled
+                                        && !overlay.providerTestActive
+                                    onClicked: overlay.providerTestRequested(modelData.id)
+                                }
+                            }
+                        }
+                    }
+
+                    ModalButtonRow {
+                        ActionButton {
+                            label: "ATUALIZAR"
+                            emphasis: false
+                            onClicked: overlay.providersRefreshRequested()
+                        }
+                    }
+                }
+
                 // -------------------------------------------- DANGER ZONE
                 Column {
                     width: parent.width
                     spacing: Theme.spacingMd
-                    visible: overlay._tab === 3
+                    visible: overlay._tab === 5
 
                     Rectangle {
                         width: parent.width

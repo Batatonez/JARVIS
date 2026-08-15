@@ -132,6 +132,16 @@ class StatusSnapshot:
     voice_input_active: bool = False
     voice_output_active: bool = False
     voice_output_enabled: bool = False
+    # --- Rota de IA da última resposta (v1.5.0) ---
+    #
+    # A telemetria já existia desde a v1.4.0
+    # (`ProviderRouterAIService.last_result_summary`); o que faltava era ela
+    # chegar ao HUD. Vazios até a primeira resposta — nunca preenchidos com um
+    # provider "provável", só com o que realmente serviu.
+    ai_provider: str = ""
+    ai_model: str = ""
+    ai_fallback_used: bool = False
+    ai_fallback_count: int = 0
 
 
 @dataclass(frozen=True)

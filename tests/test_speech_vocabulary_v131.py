@@ -17,6 +17,7 @@ ao engine, e que ele nunca vira substituição de texto.
 """
 
 import asyncio
+import sys
 import unittest
 import unittest.mock
 
@@ -72,7 +73,17 @@ class WhisperOptionsTests(unittest.TestCase):
     def _provider(self):
         from services.faster_whisper_stt_provider import FasterWhisperSTTProvider
 
-        with unittest.mock.patch("pathlib.Path.is_dir", return_value=True):
+        # O `__init__` do provider importa `faster_whisper` só para falhar cedo
+        # quando o pacote não está instalado. Estes testes exercitam o CONTRATO
+        # de opções passadas ao engine (com um modelo falso), então depender do
+        # pacote real instalado tornaria o resultado refém do ambiente — foi
+        # exatamente o que aconteceu: uma política de Controle de Aplicativo do
+        # Windows passou a bloquear uma DLL de `av` (dependência transitiva) e
+        # os cinco testes desta classe viraram erro sem nenhuma mudança de
+        # código. O stub mantém o teste hermético.
+        with unittest.mock.patch.dict(
+            sys.modules, {"faster_whisper": unittest.mock.Mock()}
+        ), unittest.mock.patch("pathlib.Path.is_dir", return_value=True):
             provider = FasterWhisperSTTProvider(model_dir="fake")
         return provider
 

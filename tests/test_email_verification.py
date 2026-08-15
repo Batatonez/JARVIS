@@ -201,7 +201,7 @@ class EmailVerificationTests(unittest.IsolatedAsyncioTestCase):
             await self._registered(first)
             with self.assertRaises(EmailAlreadyRegisteredError):
                 await second.register(
-                    username="bob", display_name="Bob", password="outra-senha", email="ALICE@example.com"
+                    username="bob", display_name="Bob", password="outra-senha-000", email="ALICE@example.com"
                 )
         finally:
             await first.shutdown()

@@ -244,14 +244,14 @@ class RegenerateTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await alice.register(
-                username="alice", display_name="Alice", password="senha-a-123", email="a@example.com"
+                username="alice", display_name="Alice", password="senha-a-123456", email="a@example.com"
             )
             answer = await alice.app.send_message("pergunta da alice")
             await _settle()
             alice_conversation = alice.current_conversation_id
 
             bob_user = await bob.register(
-                username="bob", display_name="Bob", password="senha-b-456", email="b@example.com"
+                username="bob", display_name="Bob", password="senha-b-456789", email="b@example.com"
             )
 
             changed = bob._conversations.update_message_content(

@@ -12,10 +12,35 @@ Item {
 
     property bool busy: false
     property string errorMessage: ""
+    // v1.5 — a decisão de "está disponível?" e "esta senha serve?" é SEMPRE
+    // do backend. Estas properties só espelham a resposta dele; nada aqui
+    // valida senha ou unicidade por conta própria, e o cadastro revalida tudo
+    // no submit (o índice UNIQUE do banco continua sendo a autoridade final
+    // contra corrida entre a consulta e o INSERT).
+    property var passwordAssessment: null
     signal loginRequested(string username, string password)
     signal registerRequested(string username, string displayName, string email, string password)
+    signal usernameAvailabilityRequested(string username)
+    signal emailAvailabilityRequested(string email)
+    signal passwordAssessmentRequested(string password, string username, string email, string displayName)
 
     property string _mode: "choice" // choice | login | register
+    // "" = ainda não consultado, "checking", "ok", "taken"
+    property string _usernameState: ""
+    property string _usernameMessage: ""
+    property string _emailState: ""
+    property string _emailMessage: ""
+
+    // Resposta do Bridge (`identityAvailabilityChanged`), roteada por campo.
+    function applyAvailability(field, available, message) {
+        if (field === "username") {
+            root._usernameState = available ? "ok" : "taken"
+            root._usernameMessage = message
+        } else if (field === "email") {
+            root._emailState = available ? "ok" : "taken"
+            root._emailMessage = message
+        }
+    }
 
     onErrorMessageChanged: if (errorMessage.length > 0) root.busy = false
 
@@ -27,6 +52,31 @@ Item {
         registerEmail.text = ""
         registerPassword.text = ""
         root.errorMessage = ""
+        root._usernameState = ""
+        root._usernameMessage = ""
+        root._emailState = ""
+        root._emailMessage = ""
+    }
+
+    // Debounce: consultar a cada tecla geraria uma consulta por caractere sem
+    // dar tempo de o usuário terminar de digitar. 400ms é o intervalo em que
+    // a resposta ainda parece instantânea.
+    Timer {
+        id: usernameDebounce
+        interval: 400
+        onTriggered: root.usernameAvailabilityRequested(registerUsername.text.trim())
+    }
+    Timer {
+        id: emailDebounce
+        interval: 400
+        onTriggered: root.emailAvailabilityRequested(registerEmail.text.trim())
+    }
+    Timer {
+        id: passwordDebounce
+        interval: 250
+        onTriggered: root.passwordAssessmentRequested(
+            registerPassword.text, registerUsername.text.trim(),
+            registerEmail.text.trim(), registerDisplayName.text.trim())
     }
 
     Rectangle {
@@ -149,11 +199,99 @@ Item {
                 visible: root._mode === "register"
                 spacing: Theme.spacingMd
 
-                AuthField { id: registerUsername; Layout.fillWidth: true; label: "USERNAME" }
-                AuthField { id: registerDisplayName; Layout.fillWidth: true; label: "NOME" }
-                AuthField { id: registerEmail; Layout.fillWidth: true; label: "E-MAIL" }
+                AuthField {
+                    id: registerUsername
+                    Layout.fillWidth: true
+                    label: "USERNAME"
+                    onTextChanged: {
+                        root._usernameState = text.trim().length > 0 ? "checking" : ""
+                        root._usernameMessage = ""
+                        usernameDebounce.restart()
+                        passwordDebounce.restart()
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: root._usernameState.length > 0
+                    text: root._usernameState === "checking"
+                        ? "Verificando…"
+                        : (root._usernameState === "ok" ? "✓ " : "✗ ") + root._usernameMessage
+                    color: root._usernameState === "ok" ? Theme.success
+                        : root._usernameState === "taken" ? Theme.danger : Theme.textFaint
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+
+                AuthField {
+                    id: registerDisplayName
+                    Layout.fillWidth: true
+                    label: "NOME"
+                    onTextChanged: passwordDebounce.restart()
+                }
+
+                AuthField {
+                    id: registerEmail
+                    Layout.fillWidth: true
+                    label: "E-MAIL"
+                    onTextChanged: {
+                        root._emailState = text.trim().length > 0 ? "checking" : ""
+                        root._emailMessage = ""
+                        emailDebounce.restart()
+                        passwordDebounce.restart()
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: root._emailState.length > 0
+                    text: root._emailState === "checking"
+                        ? "Verificando…"
+                        : (root._emailState === "ok" ? "✓ " : "✗ ") + root._emailMessage
+                    color: root._emailState === "ok" ? Theme.success
+                        : root._emailState === "taken" ? Theme.danger : Theme.textFaint
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+
                 AuthField { id: registerPassword; Layout.fillWidth: true; label: "SENHA"; isPassword: true
                     onAccepted: registerSubmit.clicked()
+                    onTextChanged: passwordDebounce.restart()
+                }
+
+                // Indicador de força: rótulo + as três checagens da política.
+                // A senha em si nunca é exibida, logada nem devolvida — o que
+                // chega aqui do Bridge é só o resultado da avaliação.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    visible: registerPassword.text.length > 0 && !!root.passwordAssessment
+
+                    Text {
+                        Layout.fillWidth: true
+                        readonly property string _level: root.passwordAssessment
+                            ? root.passwordAssessment.strength : "weak"
+                        text: "FORÇA: " + (_level === "strong" ? "FORTE"
+                            : _level === "medium" ? "MÉDIA" : "FRACA")
+                        color: _level === "strong" ? Theme.success
+                            : _level === "medium" ? Theme.warning : Theme.danger
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: Theme.letterSpacingLabel
+                    }
+                    Repeater {
+                        model: root.passwordAssessment ? root.passwordAssessment.requirements : []
+                        Text {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            text: (modelData.satisfied ? "✓ " : "✗ ") + modelData.label
+                            color: modelData.satisfied ? Theme.success : Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                    }
                 }
                 Text {
                     Layout.fillWidth: true
@@ -173,9 +311,16 @@ Item {
                     // algo dos dois lados): validar e-mail por regex no cliente
                     // rejeita endereços legítimos e não prova nada — quem prova
                     // que o endereço existe é a verificação por código.
+                    // A UI só bloqueia o que já sabe estar errado; ela nunca é
+                    // a garantia. `AccountService`/`create_user` revalidam
+                    // username, e-mail e senha no submit, e o índice UNIQUE do
+                    // banco decide a corrida — ver services/user_repository.py.
                     enabled: !root.busy
                         && registerUsername.text.length > 0
                         && registerPassword.text.length > 0
+                        && root._usernameState !== "taken"
+                        && root._emailState !== "taken"
+                        && !!(root.passwordAssessment && root.passwordAssessment.acceptable)
                         && /^[^@\s]+@[^@\s]+$/.test(registerEmail.text.trim())
                     onClicked: {
                         root.busy = true

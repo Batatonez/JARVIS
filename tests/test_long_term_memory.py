@@ -284,13 +284,13 @@ class MemoryAcrossChatsTests(unittest.IsolatedAsyncioTestCase):
         bob_account = self._account(settings, ai=bob_ai)
         try:
             await alice_account.register(
-                username="alice", display_name="Alice", password="senha-a-123", email="a@example.com"
+                username="alice", display_name="Alice", password="senha-a-123456", email="a@example.com"
             )
             await alice_account.app.send_message("Meu nome é Davi")
             await _settle()
 
             await bob_account.register(
-                username="bob", display_name="Bob", password="senha-b-456", email="b@example.com"
+                username="bob", display_name="Bob", password="senha-b-456789", email="b@example.com"
             )
             await bob_account.app.send_message("Qual é meu nome?")
             await _settle()

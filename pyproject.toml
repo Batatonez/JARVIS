@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-assistant"
-version = "1.4.0"
+version = "1.5.0"
 description = "JARVIS — assistente pessoal modular para Windows"
 requires-python = ">=3.10"
 

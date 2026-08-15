@@ -195,6 +195,19 @@ Window {
             visible: !bridge.authenticated
             onLoginRequested: (username, password) => bridge.login(username, password)
             onRegisterRequested: (username, displayName, email, password) => bridge.register(username, displayName, email, password)
+            // v1.5 — disponibilidade e força de senha: a tela pergunta, o
+            // backend responde. Ela nunca decide nada disso sozinha.
+            passwordAssessment: bridge.passwordAssessment
+            onUsernameAvailabilityRequested: (username) => bridge.checkUsernameAvailability(username)
+            onEmailAvailabilityRequested: (email) => bridge.checkEmailAvailability(email)
+            onPasswordAssessmentRequested: (password, username, email, displayName) =>
+                bridge.assessPassword(password, username, email, displayName)
+            Connections {
+                target: bridge
+                function onIdentityAvailabilityChanged(field, available, message) {
+                    authScreen.applyAvailability(field, available, message)
+                }
+            }
         }
 
         RowLayout {
@@ -373,6 +386,10 @@ Window {
             voiceAvailable: bridge.voiceAvailable
             ttsReady: bridge.ttsReady
             voiceOutputEnabled: bridge.voiceOutputEnabled
+            aiProvider: bridge.aiProvider
+            aiModel: bridge.aiModel
+            aiFallbackUsed: bridge.aiFallbackUsed
+            aiFallbackCount: bridge.aiFallbackCount
             compact: window.compact
             onVoiceOutputToggleRequested: bridge.setVoiceOutputEnabled(!bridge.voiceOutputEnabled)
             opacity: window.statusBooted ? 1 : 0
@@ -641,6 +658,9 @@ Window {
         twoFactor: bridge.twoFactorStatus
         sessions: bridge.activeSessions
         pendingEmailChange: bridge.pendingEmailChange
+        securityEvents: bridge.securityEvents
+        providers: bridge.aiProviders
+        providerTestActive: bridge.providerTestActive
         errorText: window.accountErrorText
         successText: window.accountSuccessText
         onConfirmPasswordRequested: (password) => bridge.confirmPassword(password)
@@ -654,6 +674,10 @@ Window {
         onRecoveryRegenerateRequested: (code) => bridge.regenerateRecoveryCodes(code)
         onSessionsRefreshRequested: bridge.refreshSessions()
         onLogOutOthersRequested: bridge.logOutOtherSessions()
+        onSessionRevokeRequested: (sessionId) => bridge.revokeSession(sessionId)
+        onSecurityEventsRefreshRequested: bridge.refreshSecurityEvents()
+        onProvidersRefreshRequested: bridge.refreshProviders()
+        onProviderTestRequested: (providerId) => bridge.testProviderConnection(providerId)
         onDeleteAccountRequested: (password, confirmation, code) => bridge.deleteAccount(password, confirmation, code)
         onCloseRequested: {
             window.accountSettingsOpen = false

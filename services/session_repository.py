@@ -168,6 +168,33 @@ class SessionRepository:
         self._conn.commit()
         return cursor.rowcount
 
+    def delete_by_session_id(self, user_id: str, session_id: str) -> bool:
+        """Revoga UMA sessão pelo identificador opaco que a tela mostra
+        (v1.5.0). Devolve `True` se alguma linha foi removida.
+
+        O `user_id` entra no WHERE, e é ele que impede esta operação de virar
+        um caminho para derrubar a sessão de outra conta: mesmo recebendo um
+        `session_id` adivinhado de outro usuário, o DELETE não casa. O
+        `user_id` nunca vem do frontend — quem chama é o `AccountManager`, com
+        a conta autenticada (ver `app/account_manager.py`).
+
+        `session_id` é o prefixo do SHA-256 do token (nunca o token), então
+        casamos por prefixo — é o mesmo valor que `list_sessions` devolveu."""
+        if not session_id:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, ?) = ?",
+            (user_id, len(session_id), session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def session_id_for_token(self, token: str) -> str:
+        """Identificador opaco da sessão de um token — o mesmo valor que
+        `list_sessions` expõe. Serve para o chamador saber se a sessão que
+        acabou de ser revogada era a atual (e, nesse caso, deslogar)."""
+        return hash_token(token)[:16] if token else ""
+
     def delete_others_for_user(self, user_id: str, *, keep_token: str) -> int:
         """"Sair das outras sessões" (item 55): revoga tudo menos a atual.
 

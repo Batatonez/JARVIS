@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Versão de schema que este código espera. Incrementar SEMPRE que uma
 # migração nova for adicionada a `_MIGRATIONS`.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class MigrationError(Exception):
@@ -347,12 +347,46 @@ def _apply_migration_2(connection: sqlite3.Connection) -> None:
     _migrate_session_tokens(connection)
 
 
+# --- v5 — v1.5: histórico de atividade de segurança ------------------------
+#
+# Tabela nova em vez de reaproveitar `user_settings` (chave/valor) porque isto
+# é uma série temporal com consulta própria (últimos N eventos de um usuário),
+# não uma preferência.
+#
+# `safe_metadata_json` é NULL na maioria dos eventos e, quando existe, guarda
+# só chaves de uma allowlist fechada (ver `services/security_event_repository.py`,
+# `_ALLOWED_METADATA_KEYS`). Nunca senha, token, API key, segredo TOTP, código
+# de recuperação em claro, prompt ou conteúdo de conversa — a coluna é
+# deliberadamente estreita para não virar um depósito de "qualquer coisa que
+# parecia útil na hora".
+_MIGRATION_5_DDL = """
+CREATE TABLE IF NOT EXISTS security_events (
+    event_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    safe_metadata_json TEXT
+);
+
+-- (user_id, created_at) porque toda leitura é "os eventos DESTA conta, mais
+-- recentes primeiro" — nunca uma varredura global.
+CREATE INDEX IF NOT EXISTS idx_security_events_user
+    ON security_events(user_id, created_at DESC);
+"""
+
+
+def _apply_migration_5(connection: sqlite3.Connection) -> None:
+    for statement in _statements(_MIGRATION_5_DDL):
+        connection.execute(statement)
+
+
 # Ordem importa: índice N aplica a migração que leva o schema de N para N+1.
 _MIGRATIONS = (
     _apply_migration_1,
     _apply_migration_2,
     _apply_migration_3,
     _apply_migration_4,
+    _apply_migration_5,
 )
 
 

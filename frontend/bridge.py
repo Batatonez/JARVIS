@@ -34,9 +34,11 @@ from app.account_manager import (
     TwoFactorRequiredError,
     UsernameAlreadyExistsError,
 )
+from services import password_policy
 from services.email_verification_service import mask_email
 from app.models import AppErrorCode, AppEvent, ResponseStatus, RiskLevel
 from frontend.message_model import MessageListModel, to_local_display_time
+from services.providers.types import ProviderId
 from services.stt_service import create_stt_service
 from services.vosk_model_manager import ModelDownloadCancelled, ModelDownloadError, VoiceModelManager
 
@@ -125,6 +127,14 @@ class JarvisBridge(QObject):
     emailChangeStateChanged = Signal()
     accountDeleted = Signal()
 
+    # --- Segurança da conta e providers (v1.5) ---
+    securityEventsChanged = Signal()
+    identityAvailabilityChanged = Signal(str, bool, str)  # campo, disponível, mensagem
+    passwordAssessmentChanged = Signal()
+    providerStatusChanged = Signal()
+    providerTestActiveChanged = Signal()
+    aiRouteChanged = Signal()
+
     # --- Voz: dispositivos e teste de microfone (v1.3) ---
     audioDevicesChanged = Signal()
     microphoneTestFinished = Signal(str)
@@ -199,6 +209,23 @@ class JarvisBridge(QObject):
         self._microphone_test_active = False
         self._stt_engine = "—"
 
+        # --- v1.5 ---
+        self._security_events: list[dict] = []
+        self._password_assessment: dict = {
+            "strength": "weak",
+            "acceptable": False,
+            "message": "",
+            "requirements": [],
+        }
+        self._providers: list[dict] = []
+        self._provider_test_active = False
+        # Rota de IA da última resposta (provider/modelo/fallback). Vazia até
+        # existir uma resposta real — nunca preenchida com um palpite.
+        self._ai_provider = ""
+        self._ai_model = ""
+        self._ai_fallback_used = False
+        self._ai_fallback_count = 0
+
         # Verificação de e-mail (v1.0) — os segundos vêm de timestamps reais
         # do banco, nunca de um timer que começa quando a tela abre.
         self._verification_seconds_until_expiry = 0
@@ -252,6 +279,8 @@ class JarvisBridge(QObject):
         self._refresh_two_factor_status()
         self._refresh_sessions()
         self._refresh_email_change_state()
+        self._refresh_security_events()
+        self.refreshProviders()
         self._apply_preferred_microphone()
         self._refresh_audio_devices()
 
@@ -335,6 +364,20 @@ class JarvisBridge(QObject):
         self._set_property("_microphone_available", snapshot.microphone_available, self.microphoneAvailableChanged)
         self._set_property("_stt_ready", snapshot.stt_ready, self.sttReadyChanged)
         self._set_property("_stt_status", self._app.voice.stt_status.value, self.sttStatusChanged)
+        # v1.5 — rota realmente usada na última resposta. Um único sinal para
+        # os quatro campos: eles mudam sempre juntos (vêm do mesmo snapshot).
+        route_changed = (
+            self._ai_provider != snapshot.ai_provider
+            or self._ai_model != snapshot.ai_model
+            or self._ai_fallback_used != snapshot.ai_fallback_used
+            or self._ai_fallback_count != snapshot.ai_fallback_count
+        )
+        self._ai_provider = snapshot.ai_provider
+        self._ai_model = snapshot.ai_model
+        self._ai_fallback_used = snapshot.ai_fallback_used
+        self._ai_fallback_count = snapshot.ai_fallback_count
+        if route_changed:
+            self.aiRouteChanged.emit()
 
     def _set_property(self, attr: str, value: object, signal: Signal) -> None:
         if getattr(self, attr) != value:
@@ -520,6 +563,7 @@ class JarvisBridge(QObject):
             self.accountErrorRaised.emit(error.message)
             return
         self._refresh_sessions()
+        self._refresh_security_events()
         message = "Senha alterada."
         if revoked:
             message += f" {revoked} outra(s) sessão(ões) foram encerradas."
@@ -690,7 +734,204 @@ class JarvisBridge(QObject):
             self.accountErrorRaised.emit(error.message)
             return
         self._refresh_sessions()
+        self._refresh_security_events()
         self.accountUpdated.emit(f"{revoked} outra(s) sessão(ões) encerrada(s).")
+
+    @Slot(str)
+    def revokeSession(self, session_id: str) -> None:
+        """Encerra UMA sessão (v1.5). O QML passa qual, nunca de quem — o
+        `user_id` é sempre o da conta autenticada, resolvido no backend."""
+        asyncio.ensure_future(self._revoke_session(session_id))
+
+    async def _revoke_session(self, session_id: str) -> None:
+        was_current, error = await self._account.revoke_session(session_id)
+        if error is not None:
+            self.accountErrorRaised.emit(error.message)
+            return
+        if was_current:
+            # O backend já derrubou a sessão; o Bridge só precisa refletir
+            # isso (mesmo caminho de `_logout`).
+            await self._leave_session()
+            self._current_user = None
+            self.currentUserChanged.emit()
+            self._conversations = []
+            self.conversationsChanged.emit()
+            self._message_model.sync([])
+            self._sessions = []
+            self.sessionsChanged.emit()
+            self._set_property("_authenticated", False, self.authenticatedChanged)
+            return
+        self._refresh_sessions()
+        self._refresh_security_events()
+        self.accountUpdated.emit("Sessão encerrada.")
+
+    # --- Atividade de segurança (v1.5) ---
+
+    @Property("QVariant", notify=securityEventsChanged)
+    def securityEvents(self):
+        return self._security_events
+
+    @Slot()
+    def refreshSecurityEvents(self) -> None:
+        self._refresh_security_events()
+
+    def _refresh_security_events(self) -> None:
+        self._security_events = [
+            {
+                "id": event.event_id,
+                "type": event.event_type.value,
+                "label": event.label,
+                "at": to_local_display_time(event.created_at),
+                # `metadata` já vem sanitizada pela allowlist do repositório —
+                # o Bridge não escolhe o que mostrar, só repassa.
+                "detail": self._format_event_detail(event.metadata),
+            }
+            for event in self._account.list_security_events()
+        ]
+        self.securityEventsChanged.emit()
+
+    @staticmethod
+    def _format_event_detail(metadata: dict) -> str:
+        parts: list[str] = []
+        if metadata.get("device_label"):
+            parts.append(str(metadata["device_label"]))
+        if metadata.get("masked_email"):
+            parts.append(str(metadata["masked_email"]))
+        if metadata.get("channel"):
+            parts.append(str(metadata["channel"]))
+        if metadata.get("session_count"):
+            parts.append(f"{metadata['session_count']} sessão(ões)")
+        if metadata.get("codes_remaining") is not None:
+            parts.append(f"{metadata['codes_remaining']} código(s) restante(s)")
+        return "  ·  ".join(parts)
+
+    # --- Disponibilidade de identidade no cadastro (v1.5) ---
+
+    @Slot(str)
+    def checkUsernameAvailability(self, username: str) -> None:
+        """Feedback instantâneo do cadastro. O QML faz o debounce (não faz
+        sentido consultar a cada tecla); a decisão de disponibilidade é sempre
+        do backend, e o cadastro revalida tudo no submit."""
+        available, message = self._account.check_username_available(username)
+        self.identityAvailabilityChanged.emit("username", available, message)
+
+    @Slot(str)
+    def checkEmailAvailability(self, email: str) -> None:
+        available, message = self._account.check_email_available(email)
+        self.identityAvailabilityChanged.emit("email", available, message)
+
+    # --- Força de senha (v1.5) ---
+
+    @Property("QVariant", notify=passwordAssessmentChanged)
+    def passwordAssessment(self):
+        return self._password_assessment
+
+    @Slot(str, str, str, str)
+    def assessPassword(self, password: str, username: str, email: str, display_name: str) -> None:
+        """Avalia a senha para o indicador visual. A senha NUNCA é logada,
+        persistida, devolvida ao QML nem enviada a lugar nenhum — o que sai
+        daqui é só um rótulo e três checagens booleanas.
+
+        Mesma função que a validação real usa (`password_policy.assess`), para
+        a UI nunca dizer "ok" numa senha que o backend vai recusar."""
+        assessment = password_policy.assess(
+            password, username=username, email=email, display_name=display_name
+        )
+        self._password_assessment = {
+            "strength": assessment.strength.value,
+            "acceptable": assessment.acceptable,
+            "message": assessment.message,
+            "requirements": [
+                {"key": item.key, "label": item.label, "satisfied": item.satisfied}
+                for item in assessment.requirements
+            ],
+        }
+        self.passwordAssessmentChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Properties/Slots — providers de IA (v1.5)
+    #
+    # Nenhuma API key, header `Authorization`, URL ou corpo de resposta
+    # atravessa esta fronteira. O QML recebe rótulo, booleanos e um status de
+    # um vocabulário fechado (ver services/provider_status_service.py).
+    # ------------------------------------------------------------------
+
+    @Property(str, notify=aiRouteChanged)
+    def aiProvider(self) -> str:
+        return self._ai_provider
+
+    @Property(str, notify=aiRouteChanged)
+    def aiModel(self) -> str:
+        return self._ai_model
+
+    @Property(bool, notify=aiRouteChanged)
+    def aiFallbackUsed(self) -> bool:
+        return self._ai_fallback_used
+
+    @Property(int, notify=aiRouteChanged)
+    def aiFallbackCount(self) -> int:
+        return self._ai_fallback_count
+
+    @Property("QVariant", notify=providerStatusChanged)
+    def aiProviders(self):
+        return self._providers
+
+    @Property(bool, notify=providerTestActiveChanged)
+    def providerTestActive(self) -> bool:
+        return self._provider_test_active
+
+    @Slot()
+    def refreshProviders(self) -> None:
+        """Somente leitura: lê credencial presente/ausente e flag de
+        habilitação. Nunca toca a rede — abrir a tela não pode gastar quota."""
+        service = self._account.provider_status()
+        self._providers = (
+            []
+            if service is None
+            else [
+                {
+                    "id": view.provider_id,
+                    "label": view.label,
+                    "enabled": view.enabled,
+                    "configured": view.configured,
+                    "configurationLabel": view.configuration_label,
+                    "health": view.health.value,
+                    "healthLabel": view.health_label,
+                    "models": list(view.models),
+                    "position": view.position,
+                }
+                for view in service.list_providers()
+            ]
+        )
+        self.providerStatusChanged.emit()
+
+    @Slot(str)
+    def testProviderConnection(self, provider_id: str) -> None:
+        """"TEST CONNECTION": UMA chamada mínima a UM modelo. Nunca um
+        benchmark, nunca a lista inteira, nunca em loop."""
+        if self._provider_test_active:
+            return
+        asyncio.ensure_future(self._test_provider(provider_id))
+
+    async def _test_provider(self, provider_id: str) -> None:
+        service = self._account.provider_status()
+        if service is None:
+            self.accountErrorRaised.emit("Nenhum provider de IA está configurado.")
+            return
+        try:
+            target = ProviderId(provider_id)
+        except ValueError:
+            self.accountErrorRaised.emit("Provider desconhecido.")
+            return
+
+        self._set_property("_provider_test_active", True, self.providerTestActiveChanged)
+        try:
+            view = await service.test_connection(target)
+        finally:
+            self._set_property("_provider_test_active", False, self.providerTestActiveChanged)
+        self.refreshProviders()
+        # Só o rótulo do vocabulário fechado — nunca a mensagem do provider.
+        self.accountUpdated.emit(f"{view.label}: {view.health_label}")
 
     # --- Exclusão da conta ---
 

@@ -75,17 +75,20 @@ Item {
         }
     }
 
+    // Também ativa só com tooltip (v1.5): os indicadores de rota/fallback
+    // mostram um nome de modelo abreviado e precisam explicar o que é ao
+    // passar o mouse, sem virarem controles clicáveis.
     MouseArea {
         id: clickArea
         anchors.fill: parent
         anchors.margins: -4
-        visible: indicator.clickable
-        enabled: indicator.clickable
+        visible: indicator.clickable || indicator.tooltip.length > 0
+        enabled: visible
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: indicator.clicked()
+        cursorShape: indicator.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: if (indicator.clickable) indicator.clicked()
     }
-    ToolTip.visible: indicator.clickable && clickArea.containsMouse && indicator.tooltip.length > 0
+    ToolTip.visible: clickArea.containsMouse && indicator.tooltip.length > 0
     ToolTip.text: indicator.tooltip
     ToolTip.delay: 500
 }

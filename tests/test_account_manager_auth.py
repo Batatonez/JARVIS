@@ -59,7 +59,12 @@ class AccountManagerAuthTests(unittest.IsolatedAsyncioTestCase):
             await account.logout()
 
             with self.assertRaises(UsernameAlreadyExistsError):
-                await account.register(username="alice", display_name="Outra Alice", password="outra-senha-456")
+                # A senha não pode conter nenhuma palavra do display name
+                # (política v1.5.0), senão o cadastro falharia por senha e não
+                # pelo conflito de username que este teste mede.
+                await account.register(
+                    username="alice", display_name="Outra Alice", password="chave-longa-987"
+                )
         finally:
             await account.shutdown()
 

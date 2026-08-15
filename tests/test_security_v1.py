@@ -220,11 +220,11 @@ class UserIsolationTests(unittest.IsolatedAsyncioTestCase):
         bob_account = _account(self.tmp_path, settings)
         try:
             await alice_account.register(
-                username="alice", display_name="Alice", password="senha-a-123", email="a@example.com"
+                username="alice", display_name="Alice", password="senha-a-123456", email="a@example.com"
             )
             alice_conversation = await alice_account.start_new_conversation()
             bob = await bob_account.register(
-                username="bob", display_name="Bob", password="senha-b-456", email="b@example.com"
+                username="bob", display_name="Bob", password="senha-b-456789", email="b@example.com"
             )
 
             # Leitura direta pelo ID da conversa de Alice, com o ID de Bob.
@@ -247,10 +247,10 @@ class UserIsolationTests(unittest.IsolatedAsyncioTestCase):
         bob_account = _account(self.tmp_path, settings)
         try:
             alice = await alice_account.register(
-                username="alice", display_name="Alice", password="senha-a-123", email="a@example.com"
+                username="alice", display_name="Alice", password="senha-a-123456", email="a@example.com"
             )
             await bob_account.register(
-                username="bob", display_name="Bob", password="senha-b-456", email="b@example.com"
+                username="bob", display_name="Bob", password="senha-b-456789", email="b@example.com"
             )
 
             # Bob verificando com um código gerado no contexto de Bob nunca
@@ -268,10 +268,10 @@ class UserIsolationTests(unittest.IsolatedAsyncioTestCase):
         bob_account = _account(self.tmp_path, settings)
         try:
             alice = await alice_account.register(
-                username="alice", display_name="Alice", password="senha-a-123", email="a@example.com"
+                username="alice", display_name="Alice", password="senha-a-123456", email="a@example.com"
             )
             bob = await bob_account.register(
-                username="bob", display_name="Bob", password="senha-b-456", email="b@example.com"
+                username="bob", display_name="Bob", password="senha-b-456789", email="b@example.com"
             )
             self.assertNotEqual(alice.id, bob.id)
             # O caminho usa o UUID interno, nunca o username digitado pelo

@@ -23,6 +23,13 @@ Item {
     property bool voiceAvailable: false
     property bool ttsReady: false
     property bool voiceOutputEnabled: false
+    // v1.5: rota realmente usada na última resposta. Vazia até existir uma
+    // resposta — os indicadores abaixo simplesmente não aparecem antes disso,
+    // em vez de mostrarem um provider "provável".
+    property string aiProvider: ""
+    property string aiModel: ""
+    property bool aiFallbackUsed: false
+    property int aiFallbackCount: 0
     // Breakpoint único (Main.qml: window.width < 1250) — só esconde os
     // indicadores secundários, nunca os três prioritários.
     property bool compact: false
@@ -65,6 +72,27 @@ Item {
                 : panel.jarvisState === "error" ? "danger"
                 : panel.jarvisState === "thinking" ? "active"
                 : "ready"
+        }
+        // v1.5: qual provider/modelo serviu a última resposta. Some em janela
+        // estreita (é informação de diagnóstico, não prioritária) e só existe
+        // depois da primeira resposta real.
+        StatusIndicator {
+            visible: !panel.compact && panel.aiProvider.length > 0
+            label: "ROUTE"
+            value: panel.aiModel.length > 0 ? panel.aiModel : panel.aiProvider
+            tone: "ready"
+            tooltip: panel.aiProvider + (panel.aiModel.length > 0 ? "  ·  " + panel.aiModel : "")
+        }
+        // Indicador de fallback: aparece SÓ quando um fallback realmente
+        // aconteceu. Um indicador permanente marcando "0 fallbacks" seria
+        // ruído constante para informar a ausência de um evento raro.
+        StatusIndicator {
+            visible: panel.aiFallbackUsed
+            label: "FALLBACK"
+            value: String(panel.aiFallbackCount)
+            tone: "active"
+            tooltip: "A resposta veio de um provider alternativo: "
+                + panel.aiFallbackCount + " tentativa(s) anterior(es) falharam."
         }
         StatusIndicator {
             label: "VOICE"

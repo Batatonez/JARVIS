@@ -186,7 +186,6 @@ class UserRepository:
         # porque é lá que ela é aplicada nas trocas.
         from services.account_service import validate_password
 
-        validate_password(password)
         cleaned_display = validate_display_name(display_name, fallback=cleaned_username)
 
         cleaned_email: str | None = None
@@ -194,6 +193,15 @@ class UserRepository:
         if email:
             cleaned_email = validate_email(email)
             normalized_email = normalize_email(cleaned_email)
+
+        # Depois de limpar identidade: a política v1.5.0 recusa senha derivada
+        # do username/e-mail/nome, então precisa dos valores já normalizados.
+        validate_password(
+            password,
+            username=cleaned_username,
+            email=cleaned_email or "",
+            display_name=cleaned_display,
+        )
 
         password_hash = hash_password(password)
         user_id = str(uuid4())

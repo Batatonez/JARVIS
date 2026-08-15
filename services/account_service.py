@@ -17,35 +17,29 @@ um traceback nem detalhe de banco.
 import logging
 
 from app.models import AppError, AppErrorCode, User
+from services import password_policy
 from services.reauth import ReauthGuard, SensitiveAction
+from services.security_event_repository import SecurityEventRepository, SecurityEventType
 from services.session_repository import SessionRepository
 from services.user_repository import (
+    InvalidEmailError,
     InvalidUsernameError,
     UserRepository,
     UsernameAlreadyExistsError,
+    validate_email,
+    validate_username,
 )
 
 logger = logging.getLogger(__name__)
 
-# Mínimo de 8 caracteres — o piso recomendado pelo OWASP para senha de
-# usuário. Sem teto artificial baixo e sem exigência de "1 maiúscula, 1
-# símbolo": regras de composição empurram o usuário para "Senha1!" e não
-# aumentam a entropia real.
-PASSWORD_MIN_LENGTH = 8
-
-
-class InvalidPasswordError(ValueError):
-    """Senha nova fora da política."""
-
-
-def validate_password(password: str) -> str:
-    if not password:
-        raise InvalidPasswordError("Informe uma senha.")
-    if len(password) < PASSWORD_MIN_LENGTH:
-        raise InvalidPasswordError(
-            f"A senha precisa ter pelo menos {PASSWORD_MIN_LENGTH} caracteres."
-        )
-    return password
+# A política de senha em si mora em `services/password_policy.py` desde a
+# v1.5.0 (comprimento, senha comum, senha derivada dos dados da conta). Estes
+# nomes continuam exportados daqui porque é daqui que o resto do sistema
+# sempre os importou — mover a política não deveria obrigar cada chamador a
+# saber que ela mudou de arquivo.
+PASSWORD_MIN_LENGTH = password_policy.MIN_LENGTH
+InvalidPasswordError = password_policy.InvalidPasswordError
+validate_password = password_policy.validate_password
 
 
 class AccountService:
@@ -55,10 +49,20 @@ class AccountService:
         sessions: SessionRepository,
         *,
         reauth: ReauthGuard,
+        events: SecurityEventRepository | None = None,
     ) -> None:
+        """`events` é opcional para que testes e chamadas de CLI que só querem
+        exercitar a política de conta não precisem montar a tabela de
+        atividade. Em produção o `AccountManager` sempre passa o repositório
+        real — registrar atividade não é opcional para o usuário final."""
         self._users = users
         self._sessions = sessions
         self._reauth = reauth
+        self._events = events
+
+    def _record(self, user_id: str, event_type: SecurityEventType, **metadata) -> None:
+        if self._events is not None:
+            self._events.record(user_id=user_id, event_type=event_type, metadata=metadata)
 
     # ------------------------------------------------------------------
     # Reautenticação
@@ -129,8 +133,17 @@ class AccountService:
             return 0, AppError(
                 AppErrorCode.CONFIRMATION_MISMATCH, "A confirmação não confere com a nova senha."
             )
+        # A política precisa dos dados da conta para recusar uma senha
+        # derivada deles (v1.5.0). O `user_id` é o da sessão autenticada, então
+        # nunca há como avaliar a senha de uma conta contra os dados de outra.
+        owner = self._users.get_user(user_id)
         try:
-            validate_password(new_password)
+            validate_password(
+                new_password,
+                username=owner.username if owner else "",
+                email=owner.email or "" if owner else "",
+                display_name=owner.display_name if owner else "",
+            )
         except InvalidPasswordError as exc:
             return 0, AppError(AppErrorCode.INVALID_PASSWORD, str(exc))
 
@@ -146,6 +159,7 @@ class AccountService:
 
         # A janela de reautenticação morre junto com a senha antiga.
         self._reauth.invalidate()
+        self._record(user_id, SecurityEventType.PASSWORD_CHANGED, session_count=revoked)
         logger.info("Senha alterada; %s outra(s) sessão(ões) revogada(s).", revoked)
         return revoked, None
 
@@ -166,5 +180,77 @@ class AccountService:
         if not current_token:
             return 0, AppError(AppErrorCode.INTERNAL_ERROR, "Sessão atual desconhecida.")
         revoked = self._sessions.delete_others_for_user(user_id, keep_token=current_token)
+        self._record(user_id, SecurityEventType.OTHER_SESSIONS_REVOKED, session_count=revoked)
         logger.info("%s outra(s) sessão(ões) revogada(s) a pedido do usuário.", revoked)
         return revoked, None
+
+    def revoke_session(
+        self, *, user_id: str, session_id: str, current_token: str | None
+    ) -> tuple[bool, AppError | None]:
+        """Revoga UMA sessão (v1.5.0). Devolve `(era_a_sessão_atual, erro)` —
+        o chamador usa o primeiro valor para deslogar imediatamente quando o
+        usuário encerrou o próprio dispositivo.
+
+        O `session_id` vem da tela, mas o `user_id` vem da sessão autenticada:
+        um `session_id` de outra conta simplesmente não casa no DELETE (ver
+        `SessionRepository.delete_by_session_id`)."""
+        if not self._reauth.require(SensitiveAction.REVOKE_SESSIONS):
+            return False, AppError(
+                AppErrorCode.REAUTH_REQUIRED, "Confirme sua senha para encerrar esta sessão."
+            )
+        if not self._sessions.delete_by_session_id(user_id, session_id):
+            # Mesma mensagem para "não existe" e "é de outra conta": diferenciar
+            # confirmaria a existência de uma sessão alheia.
+            return False, AppError(AppErrorCode.INTERNAL_ERROR, "Sessão não encontrada.")
+
+        was_current = bool(
+            current_token and self._sessions.session_id_for_token(current_token) == session_id
+        )
+        self._record(user_id, SecurityEventType.SESSION_REVOKED, session_count=1)
+        logger.info("Uma sessão foi revogada a pedido do usuário (atual=%s).", was_current)
+        return was_current, None
+
+    # ------------------------------------------------------------------
+    # Atividade de segurança
+    # ------------------------------------------------------------------
+
+    def list_security_events(self, *, user_id: str, limit: int = 50, offset: int = 0):
+        """Só os eventos DESTA conta. Não existe variante sem `user_id`."""
+        if self._events is None:
+            return []
+        return self._events.list_events(user_id, limit=limit, offset=offset)
+
+    # ------------------------------------------------------------------
+    # Disponibilidade de identidade (cadastro)
+    # ------------------------------------------------------------------
+
+    def check_username_available(self, username: str) -> tuple[bool, str]:
+        """Feedback instantâneo do cadastro (v1.5.0). Devolve
+        `(disponível, mensagem)`.
+
+        **Não é a garantia de unicidade** e não substitui validação nenhuma:
+        o `create_user` revalida tudo no submit, e o índice UNIQUE do banco
+        continua sendo a autoridade final — é ele que fecha a janela de
+        corrida entre esta consulta e o INSERT. Aqui é só usabilidade.
+
+        Dizer que um username específico está em uso é legítimo (username é
+        escolhido publicamente e o cadastro fica impossível sem esse retorno);
+        o que nunca acontece é o LOGIN diferenciar conta inexistente de senha
+        errada — ver `UserRepository.authenticate`."""
+        try:
+            cleaned = validate_username(username)
+        except InvalidUsernameError as exc:
+            return False, str(exc)
+        if self._users.find_by_username(cleaned) is not None:
+            return False, "Esse username já está em uso."
+        return True, "Disponível."
+
+    def check_email_available(self, email: str) -> tuple[bool, str]:
+        """Mesma ideia do username, para o e-mail."""
+        try:
+            cleaned = validate_email(email)
+        except InvalidEmailError as exc:
+            return False, str(exc)
+        if self._users.email_in_use(cleaned):
+            return False, "Esse e-mail já está em uso."
+        return True, "Disponível."

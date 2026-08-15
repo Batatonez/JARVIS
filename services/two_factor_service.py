@@ -28,6 +28,7 @@ from app.models import AppError, AppErrorCode
 from services import totp as totp_module
 from services.reauth import ReauthGuard, SensitiveAction
 from services.recovery_code_repository import RecoveryCodeRepository
+from services.security_event_repository import SecurityEventRepository, SecurityEventType
 from services.secret_protection import is_protection_available, protect, unprotect
 from services.user_repository import UserRepository
 
@@ -70,11 +71,13 @@ class TwoFactorService:
         *,
         reauth: ReauthGuard,
         issuer: str = "JARVIS",
+        events: SecurityEventRepository | None = None,
     ) -> None:
         self._users = users
         self._recovery = recovery_codes
         self._reauth = reauth
         self._issuer = issuer
+        self._events = events
 
     # ------------------------------------------------------------------
     # Estado
@@ -187,6 +190,15 @@ class TwoFactorService:
 
         if allow_recovery and self._recovery.consume(user_id, cleaned):
             self._users.reset_totp_failures(user_id)
+            # Registrado AQUI porque este é o único ponto do sistema que sabe
+            # que um código de recuperação (e não o TOTP) foi aceito. O código
+            # em si nunca entra no evento — só o fato e quantos restaram.
+            if self._events is not None:
+                self._events.record(
+                    user_id=user_id,
+                    event_type=SecurityEventType.RECOVERY_CODE_USED,
+                    metadata={"codes_remaining": self._recovery.remaining(user_id)},
+                )
             return None
 
         seconds = self._users.register_totp_failure(user_id)
