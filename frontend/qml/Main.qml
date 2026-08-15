@@ -124,6 +124,22 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+7"; enabled: bridge.devMode; onActivated: bridge.simulateState("speaking") }
     Shortcut { sequence: "Ctrl+Shift+8"; enabled: bridge.devMode; onActivated: bridge.simulateState("processing_speech") }
 
+    // v1.7 — Universal Command Bar. `Ctrl+K` e não `Ctrl+Space`: o segundo já
+    // é o push-to-talk do microfone desde a v1.3 (logo abaixo), documentado
+    // no tooltip do MicButton. Dois handlers no mesmo atalho seria pior que
+    // qualquer ganho de consistência; `Ctrl+K` é a convenção de paleta de
+    // comandos que a pessoa já conhece de outros aplicativos.
+    property bool commandBarOpen: false
+    Shortcut {
+        sequence: "Ctrl+K"
+        enabled: bridge.authenticated
+        onActivated: {
+            commandBar.reset()
+            window.commandBarOpen = true
+            commandBar.focusInput()
+        }
+    }
+
     // Push-to-talk por clique: Ctrl+Space liga/desliga o microfone — só
     // funciona com a janela do JARVIS em foco (Shortcut do Qt é por janela,
     // não um hotkey global do Windows; ver frontend/README.md, seção Voz).
@@ -644,6 +660,43 @@ Window {
         onCloseRequested: {
             window.voiceInputOpen = false
             window.microphoneHeardText = ""
+        }
+    }
+
+    CommandBarOverlay {
+        id: commandBar
+        objectName: "commandBarOverlay"
+        anchors.fill: parent
+        z: 120
+        open: window.commandBarOpen
+        suggestions: bridge.appSuggestions
+        onTextChanged: (text) => bridge.updateCommandSuggestions(text)
+        onSubmitted: (text) => bridge.submitCommand(text)
+        onConfirmed: { bridge.confirmCommand(); commandBar.confirmationText = "" }
+        onCancelled: { bridge.cancelCommand(); window.commandBarOpen = false; commandBar.reset() }
+        onCloseRequested: { bridge.cancelCommand(); window.commandBarOpen = false; commandBar.reset() }
+
+        Connections {
+            target: bridge
+            function onCommandResultReady(detail, ok, quickActions) {
+                commandBar.confirmationText = ""
+                commandBar.resultOk = ok
+                commandBar.resultText = detail
+                if (quickActions.indexOf("open_settings") !== -1) {
+                    window.commandBarOpen = false
+                    window.accountSettingsOpen = true
+                }
+            }
+            function onCommandConfirmationRequested(description) {
+                commandBar.confirmationText = description
+            }
+            function onCommandFallbackToChat(text) {
+                // Não é comando local: a barra fecha e a mensagem segue o
+                // caminho normal do chat, sem duplicar lógica de envio.
+                window.commandBarOpen = false
+                commandBar.reset()
+                bridge.sendMessage(text)
+            }
         }
     }
 

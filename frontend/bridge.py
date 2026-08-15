@@ -34,6 +34,7 @@ from app.account_manager import (
     TwoFactorRequiredError,
     UsernameAlreadyExistsError,
 )
+from app.command_bar import CommandBarService
 from services import password_policy
 from services.email_verification_service import mask_email
 from app.models import AppErrorCode, AppEvent, ResponseStatus, RiskLevel
@@ -139,6 +140,13 @@ class JarvisBridge(QObject):
     # de vista da UI (trocar a região pode trocar a moeda automática).
     localeChanged = Signal()
 
+    # --- Universal Command Bar (v1.7) ---
+    commandBarOpenRequested = Signal()
+    commandResultReady = Signal(str, bool, "QVariant")  # detalhe, ok, quick actions
+    commandConfirmationRequested = Signal(str)          # descrição da ação de risco alto
+    commandFallbackToChat = Signal(str)                 # não é comando local: vai para a IA
+    commandSuggestionsChanged = Signal()
+
     # --- Voz: dispositivos e teste de microfone (v1.3) ---
     audioDevicesChanged = Signal()
     microphoneTestFinished = Signal(str)
@@ -229,6 +237,15 @@ class JarvisBridge(QObject):
         self._ai_model = ""
         self._ai_fallback_used = False
         self._ai_fallback_count = 0
+
+        # --- v1.7: Command Bar ---
+        # O serviço é criado uma vez e vive com o Bridge: o índice de
+        # aplicativos é construído sob demanda e reusado entre comandos.
+        self._command_bar = CommandBarService()
+        self._app_suggestions: list[dict] = []
+        # Ação de risco alto aguardando confirmação. Só existe entre o pedido
+        # e a resposta do usuário — nunca sobrevive a um cancelamento.
+        self._pending_command = None
 
         # Verificação de e-mail (v1.0) — os segundos vêm de timestamps reais
         # do banco, nunca de um timer que começa quando a tela abre.
@@ -993,6 +1010,92 @@ class JarvisBridge(QObject):
             select(self._account.regional_preferences().tts_locale)
         except Exception:
             logger.info("Nenhuma voz do idioma escolhido está disponível; mantendo a atual.")
+
+    # ------------------------------------------------------------------
+    # Universal Command Bar (v1.7)
+    #
+    # O QML não classifica nada: manda o texto e recebe o resultado. Quem
+    # entende a intenção é o `IntentRouter`, quem autoriza é `app/actions.py`
+    # e quem executa é `services/system/`. Ações de risco alto voltam como
+    # pedido de confirmação e NÃO são executadas até `confirmCommand()`.
+    # ------------------------------------------------------------------
+
+    @Property("QVariant", notify=commandSuggestionsChanged)
+    def appSuggestions(self):
+        return self._app_suggestions
+
+    @Slot(str)
+    def updateCommandSuggestions(self, text: str) -> None:
+        """Sugestões de aplicativo enquanto a pessoa digita. Só leitura de um
+        índice já construído — nunca varre o disco a cada tecla."""
+        query = (text or "").strip()
+        if len(query) < 2:
+            self._app_suggestions = []
+        else:
+            from app.intents import Intent
+
+            routed = self._command_bar._router.route(query)
+            if routed.intent is Intent.OPEN_APP:
+                query = routed.parameters.get("target", query)
+            self._app_suggestions = [
+                {"name": app.display_name, "source": app.source}
+                for app in self._command_bar._apps.search(query, limit=5)
+            ]
+        self.commandSuggestionsChanged.emit()
+
+    @Slot(str)
+    def submitCommand(self, text: str) -> None:
+        """Entrada da Command Bar. Comando local é resolvido aqui; qualquer
+        outra coisa volta como `commandFallbackToChat` e segue o caminho
+        normal do chat."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+
+        result = self._command_bar.submit(cleaned)
+
+        if result.needs_confirmation and result.request is not None:
+            self._pending_command = result.request
+            self.commandConfirmationRequested.emit(result.detail)
+            return
+
+        if not result.ok and not result.detail:
+            self.commandFallbackToChat.emit(cleaned)
+            return
+
+        self._emit_command_result(result)
+
+    @Slot()
+    def confirmCommand(self) -> None:
+        """Executa a ação de risco alto que estava aguardando. Sem uma
+        pendente, não faz nada — nunca "adivinha" qual era."""
+        request = self._pending_command
+        if request is None:
+            return
+        self._pending_command = None
+        self._emit_command_result(self._command_bar.confirm(request))
+
+    @Slot()
+    def cancelCommand(self) -> None:
+        self._pending_command = None
+
+    def _emit_command_result(self, result) -> None:
+        if "summarize_with_ai" in result.quick_actions and result.ok:
+            # "resume meu clipboard": a leitura é local, o resumo precisa da
+            # IA. O conteúdo só sai daqui porque o usuário pediu um resumo —
+            # nunca automaticamente.
+            self.commandFallbackToChat.emit(
+                f"Resuma o seguinte conteúdo da minha área de transferência:\n\n{result.detail}"
+            )
+            return
+        self.commandResultReady.emit(result.detail, result.ok, list(result.quick_actions))
+
+    @Slot()
+    def refreshAppIndex(self) -> None:
+        """Reindexa os aplicativos — usado quando a pessoa instalou algo e o
+        JARVIS ainda não o encontra."""
+        count = self._command_bar._apps.refresh()
+        self.accountUpdated.emit(f"{count} aplicativos encontrados.")
 
     @Slot()
     def refreshProviders(self) -> None:
