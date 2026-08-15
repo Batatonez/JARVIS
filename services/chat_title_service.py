@@ -37,17 +37,26 @@ MAX_TITLE_LENGTH = 60
 # O prompt pede o rótulo e nada mais. A pós-limpeza abaixo existe porque
 # modelos pequenos gostam de responder "Título: ..." ou com aspas mesmo
 # quando o prompt proíbe.
+# v1.6.0 — o idioma do título deixou de ser cravado em "português".
+#
+# O prompt é escrito em inglês e recebe o idioma-alvo como parâmetro: é uma
+# instrução técnica ao modelo, e modelos seguem "reply in Portuguese
+# (Brazil)" com mais consistência do que a mesma ordem escrita no
+# idioma-alvo. O TÍTULO sai no idioma pedido; o prompt estar em inglês não
+# influencia isso (comportamento verificado em teste).
+#
+# Sem esta mudança, um usuário com a interface em inglês via seus chats
+# nomeados em português — a mistura de idiomas que a v1.6.0 veio corrigir.
 _PROMPT = (
-    "Gere um título curto para esta conversa, em português.\n"
-    "Regras: de 2 a 6 palavras; sem aspas; sem markdown; sem ponto final; "
-    "sem emoji; NÃO copie nem repita a mensagem do usuário; NÃO responda à "
-    "conversa; descreva o ASSUNTO em outras palavras.\n"
-    "Exemplo: para uma saudação casual, um título adequado é "
-    "'Conversa com JARVIS'.\n"
-    "Responda apenas com o título.\n\n"
-    "Mensagem do usuário: {user}\n"
-    "Resposta do assistente: {assistant}\n"
+    "Write a short title for this conversation, in {language}.\n"
+    "Rules: 2 to 6 words; no quotes; no markdown; no trailing period; no emoji; "
+    "do NOT copy or repeat the user's message; do NOT answer the conversation; "
+    "describe the SUBJECT in different words.\n"
+    "Reply with the title only, written in {language}.\n\n"
+    "User message: {user}\n"
+    "Assistant reply: {assistant}\n"
 )
+_DEFAULT_TITLE_LANGUAGE = "Portuguese (Brazil)"
 
 _CONTEXT_CHARS = 500
 # Orçamento pequeno (item 22): um rótulo de 6 palavras cabe folgado. Não é
@@ -144,8 +153,20 @@ def clean_title(raw: str) -> str:
 
 
 class ChatTitleService:
-    def __init__(self, ai_service: AIService) -> None:
+    def __init__(self, ai_service: AIService, *, preferences=None) -> None:
+        """`preferences` (v1.6.0) traz o idioma em que o título deve ser
+        escrito. Opcional: sem ele o título sai no idioma padrão do projeto,
+        que é o comportamento anterior."""
         self._ai = ai_service
+        self._preferences = preferences
+
+    @property
+    def _title_language(self) -> str:
+        return (
+            self._preferences.language_prompt_name
+            if self._preferences is not None
+            else _DEFAULT_TITLE_LANGUAGE
+        )
 
     async def suggest(self, *, user_message: str, assistant_message: str = "") -> str | None:
         """Título inferido, ou `None` quando não foi possível.
@@ -162,6 +183,7 @@ class ChatTitleService:
             return None
 
         prompt = _PROMPT.format(
+            language=self._title_language,
             user=(user_message or "").strip()[:_CONTEXT_CHARS],
             assistant=(assistant_message or "").strip()[:_CONTEXT_CHARS],
         )

@@ -89,7 +89,7 @@ class ClaudeAgentProvider(AIService):
             setting_sources=[],  # não herda ~/.claude, .claude/settings.json etc.
         )
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         if self._client is not None:
             return  # sessão já ativa: idempotente, não reconecta
 

@@ -132,15 +132,44 @@ class ProviderMessage:
     Manter isto como um tipo, e não como três strings soltas, é o que impede
     um caminho futuro de "aproveitar o reasoning quando o content vier vazio"
     — que seria exatamente como o raciocínio interno vazaria para o chat.
+
+    **v1.6.0** — a separação existia desde a v1.3.2, mas cobria um campo só
+    (`message.reasoning`). Modelos de raciocínio expõem a cadeia de
+    pensamento com nomes diferentes conforme o backend (`reasoning_content`,
+    `thinking`, `thought`, `analysis`, ...), e um campo não lido é um campo
+    que ninguém separou — foi assim que raciocínio interno chegou ao chat.
+    `reasoning` agora concentra TODOS eles: um nome desconhecido a mais na
+    lista é barato, e o custo de errar é vazar a cadeia de pensamento do
+    modelo para o usuário.
+
+    `finish_reason`/`safety_metadata` entram porque o roteador precisa
+    distinguir "acabou o orçamento de tokens" de "o modelo se recusou" sem
+    ler o texto da resposta.
     """
 
     visible_content: str = ""
     reasoning: str = ""
     refusal: str | None = None
+    # Por que ficam FORA de `visible_content`: são canais de controle, não
+    # texto para o usuário. Chamadas de ferramenta não existem nesta versão,
+    # mas o campo evita que uma resposta com `tool_calls` e `content` vazio
+    # pareça uma resposta vazia inexplicável.
+    tool_calls: tuple[str, ...] = ()
+    finish_reason: str | None = None
+    safety_metadata: str | None = None
 
     @property
     def has_visible_content(self) -> bool:
         return bool(self.visible_content.strip())
+
+    @property
+    def has_internal_only_content(self) -> bool:
+        """Modelo produziu raciocínio/recusa mas nada visível. É o caso que
+        NUNCA pode virar "então mostra o raciocínio" — quem chama trata como
+        resposta vazia (ver `EmptyProviderResponseError`)."""
+        return not self.has_visible_content and bool(
+            self.reasoning.strip() or self.refusal or self.tool_calls
+        )
 
 
 @dataclass(frozen=True)

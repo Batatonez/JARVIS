@@ -44,6 +44,7 @@ from services.providers.exceptions import (
     NoFreeModelAvailableError,
     ProviderError,
     ProviderNotConfiguredError,
+    ProviderRefusedError,
     ProviderUnavailableError,
     RateLimitedError,
 )
@@ -59,6 +60,9 @@ logger = logging.getLogger(__name__)
 # específicas vêm antes das genéricas (RateLimitedError antes de
 # ProviderUnavailableError, que ela mesma estende).
 _ERROR_CODES: tuple[tuple[type[Exception], AppErrorCode], ...] = (
+    # v1.6.0 — ANTES de qualquer entrada genérica: recusa tem código próprio
+    # e nunca deve ser lida como erro de configuração ou indisponibilidade.
+    (ProviderRefusedError, AppErrorCode.PROVIDER_REFUSED),
     (FallbackExhaustedError, AppErrorCode.FALLBACK_EXHAUSTED),
     (NoFreeModelAvailableError, AppErrorCode.NO_FREE_MODEL_AVAILABLE),
     (EmptyProviderResponseError, AppErrorCode.EMPTY_PROVIDER_RESPONSE),
@@ -102,6 +106,7 @@ class ProviderRouterAIService(AIService):
         self._preferred_provider = preferred_provider
 
         self._system_prompt: str = ""
+        self._preferences = None
         self._history: list[tuple[str, str]] = []
         self._session_active = False
         self._last_result_summary: dict[str, object] | None = None
@@ -127,7 +132,7 @@ class ProviderRouterAIService(AIService):
         name = ids[0].value
         return f"{name} (free)" if self._free_only else name
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         """Idempotente. Só monta o system prompt e zera o histórico — não há
         conexão a abrir (a API é stateless, cada `ask` é uma requisição HTTP
         independente).
@@ -136,7 +141,14 @@ class ProviderRouterAIService(AIService):
         `JarvisCore.build_memory_context()`; aqui só compomos com a
         identidade de runtime, pela mesma função que o ClaudeAgentProvider
         usa (nenhum system prompt paralelo)."""
-        self._system_prompt = build_runtime_system_prompt(memory_context or "")
+        # v1.6.0 — as diretrizes de idioma/região/moeda entram no system
+        # prompt, que é reenviado em TODA chamada desta sessão. É isso que
+        # faz o fallback preservar o idioma: o `RouteRequest.system_prompt` é
+        # o mesmo objeto para todos os candidatos da cadeia, então trocar de
+        # provider no meio de uma request não troca o idioma da resposta
+        # (item 49/82).
+        self._preferences = preferences
+        self._system_prompt = build_runtime_system_prompt(memory_context or "", preferences)
         self._history = []
         self._session_active = self.is_available()
 
@@ -167,6 +179,30 @@ class ProviderRouterAIService(AIService):
             raise AIServiceUnavailableError(str(exc)) from exc
 
         reply = result.output.strip()
+
+        if result.refusal is not None:
+            # v1.6.0 — recusa NÃO entra no histórico reenviado ao provider.
+            #
+            # Bug observado: uma mensagem recusada fazia o JARVIS continuar
+            # recusando as seguintes ("pq nao?", "adasdasdasd"). A causa não
+            # era uma flag de bloqueio — não existe nenhuma no projeto — e sim
+            # o histórico: a recusa era gravada como turno de `assistant` e
+            # reenviada a cada chamada, então o modelo lia a própria recusa e
+            # se ancorava nela.
+            #
+            # O PAR inteiro (pergunta + recusa) sai. Remover só a recusa
+            # deixaria uma pergunta do usuário sem resposta no histórico, o
+            # que além de desbalancear a alternância de papéis que alguns
+            # providers exigem, convidaria o modelo a "completar" a lacuna.
+            #
+            # Isto NÃO desativa safety: a recusa foi produzida, foi mostrada
+            # ao usuário, e a próxima mensagem será avaliada normalmente pelo
+            # provider — que continua livre para recusar de novo se for o
+            # caso. O que deixa de existir é a recusa se auto-perpetuando.
+            logger.info("Recusa estruturada não entra no histórico da sessão (escopo: esta request).")
+            self._last_result_summary = self._summarize(result)
+            return reply
+
         self._history.append(("user", message))
         self._history.append(("assistant", reply))
         self._last_result_summary = self._summarize(result)

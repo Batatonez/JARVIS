@@ -65,6 +65,11 @@ class AppErrorCode(Enum):
     # fallback; sinal de configuração quebrada ou bug, não de instabilidade
     # transitória (ver services/providers/exceptions.py::NonRecoverableProviderError).
     PROVIDER_CONFIGURATION_ERROR = "provider_configuration_error"
+    # v1.6.0 — o modelo recusou este pedido. Código PRÓPRIO, distinto de
+    # falha de provider: recusa não é indisponibilidade nem erro de
+    # configuração, e o HUD não deve sugerir "tente de novo"/"cheque a
+    # credencial" para algo que foi uma decisão sobre o conteúdo do pedido.
+    PROVIDER_REFUSED = "provider_refused"
     # --- Verificação de e-mail (v1.0 — ver services/email_verification_service.py) ---
     EMAIL_SERVICE_NOT_CONFIGURED = "email_service_not_configured"
     VERIFICATION_CODE_INVALID = "verification_code_invalid"

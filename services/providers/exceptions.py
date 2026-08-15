@@ -191,6 +191,35 @@ class EmptyProviderResponseError(ProviderError):
         super().__init__(f"{self.CODE}: {message}")
 
 
+class ProviderRefusedError(ProviderError):
+    """O modelo RECUSOU explicitamente atender ao pedido (v1.6.0).
+
+    Existe separada de `EmptyProviderResponseError` por uma razão de
+    política, não de forma: as duas chegam ao router como "sem conteúdo
+    visível", mas significam coisas opostas.
+
+    Uma resposta vazia é uma FALHA — o modelo tentou e não entregou, e tentar
+    o próximo candidato é a reação certa. Uma recusa é uma DECISÃO — o modelo
+    entendeu o pedido e resolveu não atender. Tratar recusa como falha faria
+    o router percorrer a cadeia inteira procurando um provider mais
+    permissivo, que é literalmente usar o fallback para contornar safety
+    (v1.6.0, item 40). Por isso esta exceção **encerra** a cadeia: nenhum
+    outro candidato é consultado.
+
+    Não é uma falha de configuração e não é instabilidade: o pedido chegou,
+    foi avaliado e foi recusado. `reason` guarda o motivo estruturado que o
+    provider informou, para log — nunca é apresentado cru ao usuário."""
+
+    CODE = "PROVIDER_REFUSED"
+    CATEGORY = "PROVIDER_REFUSED"
+
+    def __init__(
+        self, message: str = "O modelo recusou atender a este pedido.", *, reason: str | None = None
+    ) -> None:
+        self.reason = reason
+        super().__init__(f"{self.CODE}: {message}")
+
+
 class FallbackExhaustedError(ProviderError):
     """Todos os candidatos (provider, modelo) da cadeia de fallback foram
     tentados e nenhum produziu uma resposta utilizável — nunca um erro

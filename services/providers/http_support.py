@@ -147,6 +147,52 @@ def _coerce_text(value: object) -> str:
     return ""
 
 
+# Nomes usados por diferentes backends para a MESMA coisa: a cadeia de
+# pensamento interna do modelo. Nenhum destes campos pode virar conteúdo
+# visível, em nenhuma circunstância.
+#
+# A lista é deliberadamente generosa. Um nome aqui que o provider nunca envia
+# não custa nada (o `.get()` devolve vazio); um nome que falta é raciocínio
+# interno chegando ao chat — foi exatamente o bug relatado na v1.6.0. Os
+# nomes vêm dos dialetos observados: `reasoning` (OpenRouter), o
+# `reasoning_content` das APIs no estilo DeepSeek/Qwen que NVIDIA NIM e
+# Mistral espelham, e `thinking`/`thought`/`analysis` dos modelos que expõem
+# o canal de análise separadamente (a família gpt-oss usa "analysis").
+_REASONING_FIELDS: tuple[str, ...] = (
+    "reasoning",
+    "reasoning_content",
+    "thinking",
+    "thought",
+    "thoughts",
+    "analysis",
+    "internal_reasoning",
+)
+
+
+def extract_reasoning(message: dict) -> str:
+    """Junta todo campo de raciocínio presente na mensagem, na ordem
+    declarada. Junta (em vez de pegar o primeiro) porque nada garante que um
+    backend use um só — e o objetivo aqui não é reconstruir o raciocínio
+    fielmente, é garantir que nenhum pedaço dele escape para `content`."""
+    parts = [_coerce_text(message.get(field)) for field in _REASONING_FIELDS]
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _extract_tool_calls(message: dict) -> tuple[str, ...]:
+    """Só os NOMES das funções chamadas — nunca os argumentos, que podem
+    carregar dado do usuário e não têm utilidade fora da execução."""
+    raw = message.get("tool_calls")
+    if not isinstance(raw, list):
+        return ()
+    names = []
+    for call in raw:
+        if isinstance(call, dict):
+            function = call.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                names.append(function["name"])
+    return tuple(names)
+
+
 def parse_openai_chat_message(data: dict) -> ProviderMessage:
     """Separa a mensagem de uma resposta no formato OpenAI Chat Completions
     por natureza — `visible_content` (só isto pode virar mensagem de
@@ -163,10 +209,16 @@ def parse_openai_chat_message(data: dict) -> ProviderMessage:
     choices = data.get("choices") or []
     if not choices:
         return ProviderMessage()
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    message = choice.get("message") or {}
 
     return ProviderMessage(
+        # `content` e SOMENTE `content`. Nunca `content or reasoning`: uma
+        # resposta sem conteúdo visível é uma resposta vazia, e é assim que
+        # ela tem que chegar ao router (que então decide sobre fallback).
         visible_content=_coerce_text(message.get("content")),
-        reasoning=_coerce_text(message.get("reasoning")),
+        reasoning=extract_reasoning(message),
         refusal=message.get("refusal") or None,
+        tool_calls=_extract_tool_calls(message),
+        finish_reason=choice.get("finish_reason") or None,
     )

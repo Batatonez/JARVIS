@@ -51,7 +51,7 @@ class _TitleAI(AIService):
     def backend_name(self) -> str:
         return "fake"
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         return None
 
     async def ask(self, message: str) -> str:
@@ -165,11 +165,17 @@ class ChatTitleServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ai.session_prompts, [])
 
     async def test_prompt_asks_for_the_title_only(self) -> None:
+        """v1.6.0 — o prompt passou a ser escrito em inglês e a receber o
+        idioma-alvo como parâmetro (o TÍTULO continua saindo no idioma do
+        usuário; a instrução é que virou técnica). O teste mede a mesma
+        propriedade de antes: pede título e proíbe copiar a mensagem."""
         ai = _TitleAI()
         await ChatTitleService(ai).suggest(user_message="oi tudo bem", assistant_message="olá")
         prompt = ai.isolated_prompts[0].lower()
-        self.assertIn("título", prompt)
-        self.assertIn("não copie", prompt)
+        self.assertIn("title", prompt)
+        self.assertIn("do not copy", prompt)
+        # Sem preferências, o idioma-alvo é o padrão do projeto.
+        self.assertIn("portuguese (brazil)", prompt)
 
     async def test_provider_failure_is_silent(self) -> None:
         """Item 14: falha nunca vira erro visível nem laço."""

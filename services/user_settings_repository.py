@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 # quando um USB é conectado ou depois de um reboot (item 14).
 KEY_MICROPHONE = "voice.microphone_key"
 
+# v1.6.0 — preferência regional por conta. Guardamos a ESCOLHA, não o
+# resultado: `automatic` fica gravado como `automatic` e a detecção roda de
+# novo a cada sessão, então trocar a configuração do Windows (ou viajar) se
+# reflete sozinho. Gravar o país detectado congelaria uma decisão que era
+# para ser automática — e seria guardar localização, que este projeto não faz.
+KEY_LANGUAGE = "locale.language"
+KEY_REGION = "locale.region"
+KEY_CURRENCY = "locale.currency"
+
 _MAX_VALUE_LENGTH = 512
 
 

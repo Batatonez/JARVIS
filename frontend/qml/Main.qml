@@ -661,6 +661,9 @@ Window {
         securityEvents: bridge.securityEvents
         providers: bridge.aiProviders
         providerTestActive: bridge.providerTestActive
+        locale: bridge.locale
+        localeOptions: bridge.localeOptions
+        strings: bridge.strings
         errorText: window.accountErrorText
         successText: window.accountSuccessText
         onConfirmPasswordRequested: (password) => bridge.confirmPassword(password)
@@ -678,6 +681,8 @@ Window {
         onSecurityEventsRefreshRequested: bridge.refreshSecurityEvents()
         onProvidersRefreshRequested: bridge.refreshProviders()
         onProviderTestRequested: (providerId) => bridge.testProviderConnection(providerId)
+        onLocalePreferencesRequested: (language, region, currency) =>
+            bridge.setLocalePreferences(language, region, currency)
         onDeleteAccountRequested: (password, confirmation, code) => bridge.deleteAccount(password, confirmation, code)
         onCloseRequested: {
             window.accountSettingsOpen = false

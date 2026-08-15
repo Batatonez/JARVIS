@@ -39,6 +39,7 @@ class JarvisCore:
         event_bus: EventBus | None = None,
         memory_service: MemoryService | None = None,
         ai_service: AIService | None = None,
+        regional_preferences=None,
     ) -> None:
         self.settings = settings or default_settings
         self.event_bus = event_bus or EventBus()
@@ -46,6 +47,11 @@ class JarvisCore:
             self.settings.profile_path, self.settings.preferences_path
         )
         self.ai_service = ai_service or create_ai_service(self.settings)
+        # v1.6.0 — preferências de idioma/região/moeda do usuário logado.
+        # Quem as resolve é o `AccountManager` (que sabe quem está logado);
+        # o Core só as repassa ao `AIService` na conexão. `None` significa
+        # "sem diretriz de locale" — nunca um idioma presumido.
+        self.regional_preferences = regional_preferences
         self.state = JarvisState.IDLE
         self.orchestrator = Orchestrator(self)
         self._running = False
@@ -115,7 +121,9 @@ class JarvisCore:
         memory_context = self.build_memory_context()
         self.event_bus.emit("ai.connecting")
         try:
-            await self.ai_service.start(memory_context=memory_context)
+            await self.ai_service.start(
+                memory_context=memory_context, preferences=self.regional_preferences
+            )
         except AIServiceUnavailableError as exc:
             # Provider configurado mas a conexão falhou (ex.: CLI do Agent SDK
             # ausente, erro de autenticação). Cai para o fallback seguro em vez

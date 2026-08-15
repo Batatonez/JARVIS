@@ -76,12 +76,27 @@ Item {
         // v1.5: qual provider/modelo serviu a última resposta. Some em janela
         // estreita (é informação de diagnóstico, não prioritária) e só existe
         // depois da primeira resposta real.
+        // v1.6.0: rótulo "AI" com o nome legível do provider, não "ROUTE" com
+        // o slug técnico — `bridge.aiProvider`/`aiModel` já chegam formatados
+        // (ver services/providers/display_names.py). O ID técnico continua
+        // existindo internamente para routing e log, e nunca aparece aqui.
         StatusIndicator {
             visible: !panel.compact && panel.aiProvider.length > 0
-            label: "ROUTE"
-            value: panel.aiModel.length > 0 ? panel.aiModel : panel.aiProvider
+            // "PROVIDER", não "AI": já existe um indicador AI acima (estado
+            // CONFIGURED/THINKING) e dois rótulos iguais lado a lado seriam
+            // ilegíveis.
+            label: "PROVIDER"
+            value: panel.aiProvider
             tone: "ready"
-            tooltip: panel.aiProvider + (panel.aiModel.length > 0 ? "  ·  " + panel.aiModel : "")
+            tooltip: panel.aiModel.length > 0
+                ? "Última resposta: " + panel.aiProvider + " · " + panel.aiModel
+                : "Última resposta: " + panel.aiProvider
+        }
+        StatusIndicator {
+            visible: !panel.compact && panel.aiModel.length > 0
+            label: "MODEL"
+            value: panel.aiModel
+            tone: "ready"
         }
         // Indicador de fallback: aparece SÓ quando um fallback realmente
         // aconteceu. Um indicador permanente marcando "0 fallbacks" seria
@@ -89,7 +104,7 @@ Item {
         StatusIndicator {
             visible: panel.aiFallbackUsed
             label: "FALLBACK"
-            value: String(panel.aiFallbackCount)
+            value: "×" + panel.aiFallbackCount
             tone: "active"
             tooltip: "A resposta veio de um provider alternativo: "
                 + panel.aiFallbackCount + " tentativa(s) anterior(es) falharam."

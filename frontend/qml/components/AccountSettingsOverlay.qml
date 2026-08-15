@@ -25,6 +25,19 @@ Item {
     property var securityEvents: []      // [{id, type, label, at, detail}]
     property var providers: []           // [{id, label, enabled, configured, configurationLabel, health, healthLabel, models, position}]
     property bool providerTestActive: false
+    // v1.6 — idioma/região/moeda. Tudo já resolvido pelo backend: esta tela
+    // não lê locale do sistema, não deriva moeda e não traduz nada sozinha.
+    property var locale: null            // {language, languageName, languageIsAuto, region, regionName, currency, currencySymbol, detectedLocale, ...}
+    property var localeOptions: null     // {languages: [{value,label}], regions: [...], currencies: [...]}
+    property var strings: ({})           // catálogo de tradução do idioma vigente
+
+    // Texto traduzido com fallback para a própria chave — um rótulo vazio
+    // seria um bug invisível; a chave crua aparecendo é diagnosticável.
+    function tr(key, fallback) {
+        if (overlay.strings && overlay.strings[key])
+            return overlay.strings[key]
+        return fallback !== undefined ? fallback : key
+    }
 
     signal confirmPasswordRequested(string password)
     signal displayNameChangeRequested(string displayName)
@@ -41,11 +54,20 @@ Item {
     signal securityEventsRefreshRequested()
     signal providersRefreshRequested()
     signal providerTestRequested(string providerId)
+    signal localePreferencesRequested(string language, string region, string currency)
     signal deleteAccountRequested(string password, string confirmation, string code)
     signal closeRequested()
 
     property int _tab: 0
-    readonly property var _tabs: ["PROFILE", "SECURITY", "SESSIONS", "ACTIVITY", "AI PROVIDERS", "DANGER ZONE"]
+    readonly property var _tabs: [
+        overlay.tr("account.profile", "PROFILE"),
+        overlay.tr("account.security", "SECURITY"),
+        overlay.tr("account.sessions", "SESSIONS"),
+        overlay.tr("account.activity", "ACTIVITY"),
+        overlay.tr("account.providers", "AI PROVIDERS"),
+        overlay.tr("settings.language_region", "LANGUAGE & REGION"),
+        overlay.tr("account.danger_zone", "DANGER ZONE")
+    ]
 
     function _reset() {
         errorText = ""
@@ -150,7 +172,11 @@ Item {
                     // toca a conta), então pedir a senha ali seria ritual sem
                     // função — e ritual sem função ensina o usuário a digitar
                     // a senha sem pensar.
-                    visible: overlay._tab === 1 || overlay._tab === 2 || overlay._tab === 5
+                    // ACTIVITY, AI PROVIDERS e LANGUAGE & REGION são leitura
+                    // ou preferência de interface — pedir a senha ali seria
+                    // ritual sem função, e ritual sem função ensina o usuário
+                    // a digitar a senha sem pensar.
+                    visible: overlay._tab === 1 || overlay._tab === 2 || overlay._tab === 6
                     height: reauthColumn.implicitHeight + Theme.spacingSm * 2
                     radius: Theme.radiusSmall
                     color: Theme.surfacePanel
@@ -628,11 +654,94 @@ Item {
                     }
                 }
 
+                // --------------------------------------- LANGUAGE & REGION
+                Column {
+                    id: localeTab
+                    width: parent.width
+                    spacing: Theme.spacingMd
+                    visible: overlay._tab === 5
+
+                    // Escolhas pendentes: só viram preferência ao clicar em
+                    // SALVAR. Aplicar a cada mexida no seletor reconectaria a
+                    // sessão de IA várias vezes enquanto a pessoa ainda está
+                    // decidindo.
+                    property string pendingLanguage: overlay.locale
+                        ? (overlay.locale.languageIsAuto ? "automatic" : overlay.locale.language) : "automatic"
+                    property string pendingRegion: overlay.locale
+                        ? (overlay.locale.regionIsAuto ? "automatic" : overlay.locale.region) : "automatic"
+                    property string pendingCurrency: overlay.locale
+                        ? (overlay.locale.currencyIsAuto ? "automatic" : overlay.locale.currency) : "automatic"
+
+                    Text {
+                        width: parent.width
+                        text: overlay.tr("settings.detected_from", "Detectado da configuração regional do sistema")
+                            + (overlay.locale && overlay.locale.detectedLocale
+                               ? "  ·  " + overlay.locale.detectedLocale : "")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+
+                    LocaleSelector {
+                        width: parent.width
+                        label: overlay.tr("settings.language", "IDIOMA")
+                        options: overlay.localeOptions ? overlay.localeOptions.languages : []
+                        currentValue: localeTab.pendingLanguage
+                        // "Automático — Português (Brasil)": mostra a escolha
+                        // E o que ela resolveu, para automático não virar
+                        // caixa-preta.
+                        resolvedLabel: overlay.locale && overlay.locale.languageIsAuto
+                            ? overlay.locale.languageName : ""
+                        onSelected: (value) => localeTab.pendingLanguage = value
+                    }
+
+                    LocaleSelector {
+                        width: parent.width
+                        label: overlay.tr("settings.region", "REGIÃO")
+                        options: overlay.localeOptions ? overlay.localeOptions.regions : []
+                        currentValue: localeTab.pendingRegion
+                        resolvedLabel: overlay.locale && overlay.locale.regionIsAuto
+                            ? overlay.locale.regionName : ""
+                        onSelected: (value) => localeTab.pendingRegion = value
+                    }
+
+                    LocaleSelector {
+                        width: parent.width
+                        label: overlay.tr("settings.currency", "MOEDA")
+                        options: overlay.localeOptions ? overlay.localeOptions.currencies : []
+                        currentValue: localeTab.pendingCurrency
+                        resolvedLabel: overlay.locale && overlay.locale.currencyIsAuto && overlay.locale.currency
+                            ? overlay.locale.currency + " (" + overlay.locale.currencySymbol + ")" : ""
+                        onSelected: (value) => localeTab.pendingCurrency = value
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: "Idioma e região são independentes: é possível manter as respostas "
+                            + "em um idioma e os preços na moeda de outra região."
+                        color: Theme.textFaint
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+
+                    ModalButtonRow {
+                        ActionButton {
+                            label: overlay.tr("settings.save", "SALVAR")
+                            emphasis: true
+                            tint: Theme.blue
+                            onClicked: overlay.localePreferencesRequested(
+                                localeTab.pendingLanguage, localeTab.pendingRegion, localeTab.pendingCurrency)
+                        }
+                    }
+                }
+
                 // -------------------------------------------- DANGER ZONE
                 Column {
                     width: parent.width
                     spacing: Theme.spacingMd
-                    visible: overlay._tab === 5
+                    visible: overlay._tab === 6
 
                     Rectangle {
                         width: parent.width

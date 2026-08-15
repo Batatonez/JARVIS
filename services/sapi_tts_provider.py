@@ -56,6 +56,48 @@ class SapiTTSProvider(TextToSpeechService):
                 return voice.id
         return voices[0].id
 
+    # Pistas por idioma para casar com o nome/id da voz instalada no Windows.
+    # Uma lista por idioma (e não uma regex) porque os nomes variam muito
+    # entre versões do Windows: "Microsoft Maria Desktop - Portuguese(Brazil)",
+    # "Microsoft Helena Desktop - Spanish (Spain)", etc.
+    _VOICE_HINTS: dict[str, tuple[str, ...]] = {
+        "pt-BR": ("pt-br", "pt_br", "portuguese", "brazil", "brasil"),
+        "en-US": ("en-us", "en_us", "english", "united states"),
+        "es-ES": ("es-es", "es_es", "spanish", "espa"),
+    }
+
+    def select_language(self, locale_tag: str) -> bool:
+        """Troca para uma voz do idioma pedido, se houver uma instalada
+        (v1.6.0). Devolve `True` quando trocou.
+
+        Nunca baixa voz e nunca levanta: sem voz correspondente, mantém a
+        atual e devolve `False`. Um idioma sem voz instalada é uma limitação
+        do sistema do usuário, não um erro do JARVIS — e falar com sotaque
+        errado é melhor do que não falar."""
+        hints = self._VOICE_HINTS.get(locale_tag) or self._VOICE_HINTS.get(
+            (locale_tag or "").split("-")[0]
+        )
+        if not hints:
+            return False
+        try:
+            probe = pyttsx3.init()
+            try:
+                voices = probe.getProperty("voices") or []
+            finally:
+                probe.stop()
+        except Exception:
+            logger.info("Não foi possível listar vozes do sistema; mantendo a voz atual.")
+            return False
+
+        for voice in voices:
+            haystack = f"{voice.id or ''} {getattr(voice, 'name', '') or ''}".lower()
+            if any(hint in haystack for hint in hints):
+                self._voice_id = voice.id
+                logger.info("Voz do TTS ajustada para o idioma %s.", locale_tag)
+                return True
+        logger.info("Nenhuma voz instalada para %s; mantendo a voz atual.", locale_tag)
+        return False
+
     def is_available(self) -> bool:
         return True
 

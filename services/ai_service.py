@@ -44,8 +44,14 @@ class AIService(ABC):
         """Nome legível do backend em uso (para /status), ex.: 'Claude Agent SDK'."""
 
     @abstractmethod
-    async def start(self, *, memory_context: str = "") -> None:
-        """Conecta/inicia a sessão. Idempotente: chamar de novo não deve recriar a sessão."""
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
+        """Conecta/inicia a sessão. Idempotente: chamar de novo não deve recriar a sessão.
+
+        `preferences` (v1.6.0) são as `RegionalPreferences` resolvidas do
+        usuário — idioma, região e moeda que devem valer para TODAS as
+        respostas desta sessão. Opcional para não quebrar implementação nem
+        fake existente; ausente significa "sem diretriz de locale", nunca um
+        idioma presumido."""
 
     @abstractmethod
     async def ask(self, message: str) -> str:
@@ -92,7 +98,7 @@ class UnavailableAIService(AIService):
     def backend_name(self) -> str:
         return "nenhum"
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         return None
 
     async def ask(self, message: str) -> str:

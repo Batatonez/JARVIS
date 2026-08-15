@@ -34,6 +34,7 @@ class FakeAIService(AIService):
         self.start_count = 0
         self.close_count = 0
         self.received_memory_context: str | None = None
+        self.received_preferences = None
         self.asked_messages: list[str] = []
 
     def is_available(self) -> bool:
@@ -47,10 +48,13 @@ class FakeAIService(AIService):
     def backend_name(self) -> str:
         return "Fake"
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         self.started = True
         self.start_count += 1
         self.received_memory_context = memory_context
+        # v1.6.0 — guardado para os testes poderem afirmar que as preferências
+        # de idioma/região chegaram ao serviço de IA.
+        self.received_preferences = preferences
         self._session_active = True
 
     async def ask(self, message: str) -> str:

@@ -38,6 +38,7 @@ from services import password_policy
 from services.email_verification_service import mask_email
 from app.models import AppErrorCode, AppEvent, ResponseStatus, RiskLevel
 from frontend.message_model import MessageListModel, to_local_display_time
+from services.providers.display_names import format_model_name, format_provider_name
 from services.providers.types import ProviderId
 from services.stt_service import create_stt_service
 from services.vosk_model_manager import ModelDownloadCancelled, ModelDownloadError, VoiceModelManager
@@ -134,6 +135,9 @@ class JarvisBridge(QObject):
     providerStatusChanged = Signal()
     providerTestActiveChanged = Signal()
     aiRouteChanged = Signal()
+    # v1.6 — idioma/região/moeda. Um sinal só: os três mudam juntos do ponto
+    # de vista da UI (trocar a região pode trocar a moeda automática).
+    localeChanged = Signal()
 
     # --- Voz: dispositivos e teste de microfone (v1.3) ---
     audioDevicesChanged = Signal()
@@ -858,11 +862,17 @@ class JarvisBridge(QObject):
 
     @Property(str, notify=aiRouteChanged)
     def aiProvider(self) -> str:
-        return self._ai_provider
+        """Nome LEGÍVEL do provider ("NVIDIA NIM"), nunca o ID técnico.
+
+        v1.6.0 — na v1.5.0 o HUD recebia o valor cru e mostrava
+        `ROUTE openai/gpt-oss-20b:free`. O ID continua existindo em
+        `self._ai_provider`/`_ai_model` para log e diagnóstico; o que
+        atravessa para o QML é só a forma apresentável."""
+        return format_provider_name(self._ai_provider)
 
     @Property(str, notify=aiRouteChanged)
     def aiModel(self) -> str:
-        return self._ai_model
+        return format_model_name(self._ai_model)
 
     @Property(bool, notify=aiRouteChanged)
     def aiFallbackUsed(self) -> bool:
@@ -879,6 +889,110 @@ class JarvisBridge(QObject):
     @Property(bool, notify=providerTestActiveChanged)
     def providerTestActive(self) -> bool:
         return self._provider_test_active
+
+    # ------------------------------------------------------------------
+    # Properties/Slots — idioma, região e moeda (v1.6)
+    #
+    # O QML nunca lê locale do sistema, nunca decide moeda e nunca traduz
+    # nada por conta própria: recebe o catálogo já resolvido e as opções já
+    # montadas pelo backend.
+    # ------------------------------------------------------------------
+
+    @Property("QVariant", notify=localeChanged)
+    def locale(self):
+        """Preferências RESOLVIDAS + de onde vieram. `languageIsAuto` e
+        companhia existem para a tela poder mostrar "Automático — Brasil" em
+        vez de esconder a origem da escolha."""
+        preferences = self._account.regional_preferences()
+        return {
+            "language": preferences.language.value,
+            "languageName": preferences.language_display_name,
+            "languageIsAuto": preferences.language_is_auto,
+            "region": preferences.region,
+            "regionName": preferences.region_display_name,
+            "regionIsAuto": preferences.region_is_auto,
+            "currency": preferences.currency,
+            "currencySymbol": preferences.currency_symbol,
+            "currencyIsAuto": preferences.currency_is_auto,
+            # Só o nome do locale/fuso do sistema — nunca coordenada,
+            # endereço ou IP (ver services/regional_preferences.py).
+            "detectedLocale": preferences.locale,
+            "detectedTimezone": preferences.timezone,
+        }
+
+    @Property("QVariant", notify=localeChanged)
+    def localeOptions(self):
+        """Listas para os três seletores, já com o rótulo de "Automático"
+        traduzido para o idioma vigente."""
+        from services.i18n import translate
+        from services.regional_preferences import (
+            AUTOMATIC,
+            CURRENCY_FORMATS,
+            LANGUAGE_DISPLAY_NAMES,
+            REGION_DISPLAY_NAMES,
+            Language,
+        )
+
+        preferences = self._account.regional_preferences()
+        automatic_label = translate("settings.automatic", preferences.language)
+
+        languages = [{"value": AUTOMATIC, "label": automatic_label}]
+        languages += [
+            {"value": language.value, "label": LANGUAGE_DISPLAY_NAMES[language]}
+            for language in Language
+        ]
+
+        regions = [{"value": AUTOMATIC, "label": automatic_label}]
+        regions += [
+            {"value": code, "label": name}
+            for code, name in sorted(REGION_DISPLAY_NAMES.items(), key=lambda item: item[1])
+        ]
+
+        currencies = [{"value": AUTOMATIC, "label": automatic_label}]
+        currencies += [
+            {"value": code, "label": f"{code} ({fmt.symbol})"}
+            for code, fmt in sorted(CURRENCY_FORMATS.items())
+        ]
+        return {"languages": languages, "regions": regions, "currencies": currencies}
+
+    @Property("QVariant", notify=localeChanged)
+    def strings(self):
+        """Catálogo de tradução do idioma vigente. O QML lê
+        `bridge.strings["settings.language"]` — nenhum arquivo de interface
+        contém `if idioma == "pt"`."""
+        from services.i18n import catalog_for
+
+        return catalog_for(self._account.regional_preferences().language)
+
+    @Slot(str, str, str)
+    def setLocalePreferences(self, language: str, region: str, currency: str) -> None:
+        """Salva as três escolhas (cada uma pode ser `automatic`) e reaplica
+        o idioma à sessão de IA em andamento, para valer já na próxima
+        mensagem sem reiniciar o JARVIS."""
+        self._account.set_regional_preferences(
+            language=language or None, region=region or None, currency=currency or None
+        )
+        self.localeChanged.emit()
+        self._apply_tts_locale()
+        asyncio.ensure_future(self._apply_locale_to_session())
+
+    async def _apply_locale_to_session(self) -> None:
+        await self._account.apply_regional_preferences()
+        self._refresh_status()
+
+    def _apply_tts_locale(self) -> None:
+        """Pede ao TTS uma voz do idioma escolhido, quando o engine suportar.
+        Nunca baixa voz e nunca derruba nada: sem voz correspondente, o
+        engine continua com a que já usava."""
+        app = self._app
+        tts = getattr(getattr(app, "voice", None), "tts", None) if app is not None else None
+        select = getattr(tts, "select_language", None)
+        if select is None:
+            return
+        try:
+            select(self._account.regional_preferences().tts_locale)
+        except Exception:
+            logger.info("Nenhuma voz do idioma escolhido está disponível; mantendo a atual.")
 
     @Slot()
     def refreshProviders(self) -> None:

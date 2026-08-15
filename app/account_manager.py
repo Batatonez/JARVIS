@@ -69,7 +69,18 @@ from services.user_repository import (
     UserRepository,
     UsernameAlreadyExistsError,
 )
-from services.user_settings_repository import KEY_MICROPHONE, UserSettingsRepository
+from services.regional_preferences import (
+    AUTOMATIC,
+    RegionalPreferences,
+    resolve_preferences,
+)
+from services.user_settings_repository import (
+    KEY_CURRENCY,
+    KEY_LANGUAGE,
+    KEY_MICROPHONE,
+    KEY_REGION,
+    UserSettingsRepository,
+)
 from services.voice_service import VoiceService
 
 logger = logging.getLogger(__name__)
@@ -439,7 +450,15 @@ class AccountManager:
         memory_service = MemoryService(user_memory_dir / "profile.md", user_memory_dir / "preferences.md")
 
         ai_service = self._ai_service_factory() if self._ai_service_factory else None
-        self.core = JarvisCore(settings=self.settings, memory_service=memory_service, ai_service=ai_service)
+        # v1.6.0 — as preferências regionais são resolvidas AQUI, na abertura
+        # da sessão, porque é o `AccountManager` que sabe quem está logado. O
+        # Core recebe o resultado pronto e nunca consulta o banco nem o SO.
+        self.core = JarvisCore(
+            settings=self.settings,
+            memory_service=memory_service,
+            ai_service=ai_service,
+            regional_preferences=self.regional_preferences(),
+        )
         voice_service = self._voice_service_factory(self.core) if self._voice_service_factory else None
         self.app = JarvisApplication(
             self.core,
@@ -562,7 +581,8 @@ class AccountManager:
         # queremos duas gerações concorrentes para a mesma conversa.
         self._auto_titled.add(conversation_id)
 
-        titles = ChatTitleService(self.core.ai_service)
+        # v1.6.0 — o título sai no idioma configurado pelo usuário.
+        titles = ChatTitleService(self.core.ai_service, preferences=self.regional_preferences())
         title = await titles.suggest(
             user_message=first_user.content, assistant_message=first_assistant.content
         )
@@ -965,6 +985,82 @@ class AccountManager:
     # ------------------------------------------------------------------
     # Preferências (v1.3)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Idioma, região e moeda (v1.6)
+    # ------------------------------------------------------------------
+
+    def regional_preferences(self) -> RegionalPreferences:
+        """Preferências RESOLVIDAS da conta atual.
+
+        Sem conta autenticada devolve o resultado da detecção do sistema —
+        a tela de login também precisa de um idioma, e "nenhum" não é uma
+        opção utilizável.
+
+        As escolhas ficam em `user_settings`, escopadas por `user_id`: uma
+        conta nunca lê nem sobrescreve a preferência de outra. `automatic` é
+        gravado como `automatic` e re-resolvido a cada chamada, então trocar
+        a configuração regional do Windows se reflete sem precisar mexer em
+        nada aqui."""
+        if self._current_user is None:
+            return resolve_preferences()
+        user_id = self._current_user.id
+        return resolve_preferences(
+            language_choice=self._user_settings.get(user_id, KEY_LANGUAGE, AUTOMATIC) or AUTOMATIC,
+            region_choice=self._user_settings.get(user_id, KEY_REGION, AUTOMATIC) or AUTOMATIC,
+            currency_choice=self._user_settings.get(user_id, KEY_CURRENCY, AUTOMATIC) or AUTOMATIC,
+        )
+
+    def set_regional_preferences(
+        self,
+        *,
+        language: str | None = None,
+        region: str | None = None,
+        currency: str | None = None,
+    ) -> RegionalPreferences:
+        """Grava as ESCOLHAS (incluindo `automatic`) e devolve o resultado já
+        resolvido. Um parâmetro `None` significa "não mexer nesta", para a
+        tela poder salvar um campo de cada vez.
+
+        A sessão de IA em andamento é reconstruída com o idioma novo (ver
+        `_reconnect_ai_with_preferences`), para a mudança valer a partir da
+        próxima mensagem sem exigir reiniciar o JARVIS (item 70)."""
+        if self._current_user is None:
+            return resolve_preferences()
+        user_id = self._current_user.id
+        for key, value in ((KEY_LANGUAGE, language), (KEY_REGION, region), (KEY_CURRENCY, currency)):
+            if value is not None:
+                self._user_settings.set(user_id, key, str(value))
+
+        preferences = self.regional_preferences()
+        if self.core is not None:
+            self.core.regional_preferences = preferences
+        logger.info(
+            "Preferência regional atualizada (idioma=%s, região=%s, moeda=%s).",
+            preferences.language.value,
+            preferences.region,
+            preferences.currency,
+        )
+        return preferences
+
+    async def apply_regional_preferences(self) -> RegionalPreferences:
+        """Reconecta o serviço de IA para o system prompt ser remontado com o
+        idioma novo. Separado de `set_regional_preferences` porque gravar a
+        escolha é síncrono e reconectar não é — e gravar não pode falhar só
+        porque a reconexão falhou."""
+        preferences = self.regional_preferences()
+        if self.core is not None:
+            self.core.regional_preferences = preferences
+            try:
+                await self.core.ai_service.close()
+                await self.core.ai_service.start(
+                    memory_context=self.core.build_memory_context(), preferences=preferences
+                )
+            except Exception:
+                # Falhar aqui não pode desfazer a preferência já salva: a
+                # próxima sessão pega o idioma novo de qualquer forma.
+                logger.exception("Falha ao reaplicar o idioma à sessão de IA em andamento.")
+        return preferences
 
     def preferred_microphone_key(self) -> str | None:
         if self._current_user is None:

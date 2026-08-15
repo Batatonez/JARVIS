@@ -39,7 +39,7 @@ class _FakeTitleAI(AIService):
     def backend_name(self) -> str:
         return "fake"
 
-    async def start(self, *, memory_context: str = "") -> None:
+    async def start(self, *, memory_context: str = "", preferences=None) -> None:
         return None
 
     async def ask(self, message: str) -> str:

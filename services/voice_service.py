@@ -18,6 +18,7 @@ import logging
 
 from app.models import TranscriptionResult
 from services.event_bus import EventBus
+from services.speech_sanitizer import sanitize_text_for_tts
 from services.stt_service import SpeechToTextService, STTStatus, STTUnavailableError, create_stt_service
 from services.tts_service import TextToSpeechService, TTSUnavailableError, create_tts_service
 
@@ -120,12 +121,35 @@ class VoiceService:
     # ------------------------------------------------------------------
 
     async def speak(self, text: str) -> None:
+        """Fala um texto. A sanitização para TTS acontece AQUI, e não em cada
+        chamador (v1.6.0).
+
+        Este método é o ponto único por onde passam a fala automática da
+        resposta e o replay/listen manual. Sanitizar aqui torna impossível,
+        por construção, existir um caminho que entregue Markdown cru ao
+        sintetizador — que era o bug: `**Importante**` sendo lido como
+        "asterisco asterisco importante asterisco asterisco". Deixar a
+        responsabilidade nos chamadores só garantiria que o próximo caminho
+        novo esquecesse.
+
+        O texto original nunca é alterado: o que é falado é uma derivação
+        descartável dele. Chat, banco e Copy continuam com a formatação."""
         if not self.tts_ready:
             raise TTSUnavailableError("Síntese de voz não está disponível.")
+
+        speech_text = sanitize_text_for_tts(text)
+        if not speech_text:
+            # Sobrou nada pronunciável (ex.: a resposta era só um bloco de
+            # código). Não é erro — simplesmente não há o que falar, e forçar
+            # o sintetizador com string vazia produziria um evento de fala
+            # que nunca termina em som nenhum.
+            logger.info("Nada pronunciável na resposta após sanitização; fala ignorada.")
+            return
+
         self._speaking = True
         self._event_bus.emit("voice.speaking.started")
         try:
-            await self.tts.speak(text)
+            await self.tts.speak(speech_text)
         except Exception as exc:
             logger.warning("Falha ao sintetizar fala: %s", exc)
             self._event_bus.emit("voice.speaking.failed", error=str(exc))

@@ -52,7 +52,7 @@ fluxo do loop (`return` assim que há sucesso) já impõe essa invariante — ve
 prova isso."""
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from services.providers.base import AIProvider
 from services.providers.env_config import DEFAULT_PROVIDER_ORDER
@@ -63,6 +63,7 @@ from services.providers.exceptions import (
     NonRecoverableProviderError,
     ProviderError,
     ProviderNotConfiguredError,
+    ProviderRefusedError,
     RecoverableProviderError,
 )
 from services.providers.registry import ProviderRegistry
@@ -75,6 +76,41 @@ logger = logging.getLogger(__name__)
 class _Candidate:
     provider_id: ProviderId
     model: ModelId
+
+
+@dataclass
+class RequestContext:
+    """Estado transitório de UMA geração (v1.6.0).
+
+    A auditoria da v1.6.0 confirmou que o JARVIS nunca teve flag global de
+    recusa — não existia `self._refused`, `conversation_blocked` nem
+    `safety_state` em lugar nenhum. `fallback_count` e `attempts` já eram
+    variáveis locais de `execute()`, portanto já isoladas na prática.
+
+    Este objeto existe para transformar "já está isolado porque são
+    variáveis locais" em uma invariante EXPLÍCITA e testável. A diferença
+    importa: uma variável local está isolada por acidente da implementação
+    atual, e a primeira refatoração que a promover a atributo de instância
+    reintroduz o bug em silêncio. Com o contexto nomeado, um teste consegue
+    afirmar que cada request começa zerada, e um `self._` acidental fica
+    visível na revisão.
+
+    Nada aqui sobrevive ao fim de `execute()`, e nada aqui é compartilhado
+    entre requests — inclusive requests concorrentes, que recebem instâncias
+    distintas por serem criadas dentro da própria chamada.
+    """
+
+    visible_content_emitted: bool = False
+    fallback_count: int = 0
+    refusal: str | None = None
+    safety_metadata: str | None = None
+    provider_error: str | None = None
+    attempts: list[str] = field(default_factory=list)
+
+    def record_attempt(self, candidate: "_Candidate", category: str) -> None:
+        self.attempts.append(f"{candidate.provider_id.value}/{candidate.model}: {category}")
+        self.fallback_count += 1
+        self.provider_error = category
 
 
 class ProviderRouter:
@@ -124,8 +160,12 @@ class ProviderRouter:
                 "Nenhum provider configurado — configure OPENROUTER_API_KEY (ou outro) no ambiente."
             )
 
-        attempts: list[str] = []
-        fallback_count = 0
+        # Contexto NOVO a cada chamada (v1.6.0, item 41). Criado aqui dentro,
+        # nunca em `self`: é isso que garante que uma recusa, um erro de
+        # provider ou uma contagem de fallback de uma request não atravesse
+        # para a próxima — nem para uma request concorrente, que executa com
+        # a sua própria instância.
+        context = RequestContext()
 
         for candidate in candidates:
             provider = self._registry.get(candidate.provider_id)
@@ -138,8 +178,7 @@ class ProviderRouter:
                 # candidato (item 18).
                 raise
             except RecoverableProviderError as exc:
-                attempts.append(f"{candidate.provider_id.value}/{candidate.model}: {exc.CATEGORY}")
-                fallback_count += 1
+                context.record_attempt(candidate, exc.CATEGORY)
                 logger.info(
                     "%s/%s indisponível (%s); avançando na cadeia de fallback.",
                     candidate.provider_id.value,
@@ -154,17 +193,35 @@ class ProviderRouter:
             if request.free_only:
                 try:
                     self._verify_free_or_raise(result, provider)
-                except NoFreeModelAvailableError as exc:
-                    attempts.append(f"{candidate.provider_id.value}/{candidate.model}: not_confirmed_free")
-                    fallback_count += 1
+                except NoFreeModelAvailableError:
+                    context.record_attempt(candidate, "not_confirmed_free")
                     logger.info(
                         "%s/%s não confirmou custo zero; avançando.", candidate.provider_id.value, candidate.model
                     )
                     continue
 
+            if result.refusal is not None and not result.has_visible_content:
+                # v1.6.0, item 40 — recusa ENCERRA a cadeia, não avança nela.
+                # Percorrer os próximos providers atrás de um mais permissivo
+                # seria usar o fallback para contornar safety. Recusa é uma
+                # decisão do modelo sobre este pedido, não uma falha de
+                # disponibilidade.
+                context.refusal = result.refusal
+                context.safety_metadata = result.refusal
+                logger.info(
+                    "%s/%s recusou o pedido; a cadeia de fallback NÃO avança (item 40).",
+                    candidate.provider_id.value,
+                    candidate.model,
+                )
+                raise ProviderRefusedError(reason=result.refusal)
+
             if not result.has_visible_content:
-                attempts.append(f"{candidate.provider_id.value}/{candidate.model}: empty_response")
-                fallback_count += 1
+                # v1.6.0, item 7: raciocínio interno JAMAIS é promovido a
+                # conteúdo visível por falta de outra coisa. Uma resposta que
+                # só tem `reasoning` é uma resposta VAZIA, e é como vazia que
+                # ela entra na decisão de fallback — a única saída aqui é
+                # tentar o próximo candidato.
+                context.record_attempt(candidate, "empty_response")
                 logger.info(
                     "%s/%s respondeu sem conteúdo visível (reasoning=%d chars); avançando.",
                     candidate.provider_id.value,
@@ -176,11 +233,17 @@ class ProviderRouter:
             # Sucesso real, com conteúdo visível confirmado: para aqui.
             # Nunca mais outro provider é chamado depois deste ponto — é
             # isso que garante que duas respostas nunca se misturam
-            # (item 20).
-            return replace(result, fallback_used=fallback_count > 0, fallback_count=fallback_count)
+            # (item 20). `visible_content_emitted` registra a invariante que
+            # o `return` já impõe, para poder ser afirmada em teste.
+            context.visible_content_emitted = True
+            return replace(
+                result,
+                fallback_used=context.fallback_count > 0,
+                fallback_count=context.fallback_count,
+            )
 
         raise FallbackExhaustedError(
-            f"Todos os {len(candidates)} candidatos configurados falharam.", attempts=attempts
+            f"Todos os {len(candidates)} candidatos configurados falharam.", attempts=context.attempts
         )
 
     async def _execute_single(self, request: RouteRequest) -> AIExecutionResult:

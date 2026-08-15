@@ -100,7 +100,7 @@ class JarvisCoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_ai_connect_failure_falls_back_to_unavailable_without_crashing(self) -> None:
         failing_ai = FakeAIService(available=True)
 
-        async def boom(*, memory_context: str = "") -> None:
+        async def boom(*, memory_context: str = "", preferences=None) -> None:
             raise AIServiceUnavailableError("falha simulada de conexão")
 
         failing_ai.start = boom  # type: ignore[method-assign]
