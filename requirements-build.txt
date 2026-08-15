@@ -1,0 +1,10 @@
+# Dependências de BUILD — só para gerar a distribuição Windows.
+# O usuário final não instala nada disto: ele baixa o JARVIS-Setup.exe.
+# O desenvolvedor que só quer rodar o app continua usando requirements.txt.
+#
+#     pip install -r requirements-build.txt
+#     python scripts/build_windows.py
+#
+# O Inno Setup NÃO é um pacote Python: instale separadamente
+# (https://jrsoftware.org/isdl.php) ou aponte INNO_SETUP_ISCC para o ISCC.exe.
+pyinstaller>=6.6

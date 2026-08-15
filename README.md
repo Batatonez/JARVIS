@@ -24,7 +24,35 @@ Versões anteriores (chat UX, contas, 2FA, STT com Faster Whisper, etc.) seguem 
 
 Sobre a base da v0.9, esta versão também endurece o que já existia: token de sessão agora guardado só como hash (com migração que **não** invalidou sessões existentes), proteção contra força bruta no login, verificação real de e-mail (código de 6 dígitos, expira em 5 min, reenvio após 60s, uso único), sistema de migração de banco versionado e transacional, e sanitização do contexto enviado à IA. Sem billing, sem cloud, sem Groq/Gemini/Mistral/NVIDIA reais — ver [`docs/security.md`](docs/security.md) para o modelo de segurança completo (e suas limitações honestas), [`docs/providers.md`](docs/providers.md) para o Provider Router e [`docs/architecture.md`](docs/architecture.md) para a arquitetura.
 
-## Como executar
+## Instalação
+
+### Para usar o JARVIS
+
+1. Abra as [Releases](https://github.com/Batatonez/JARVIS/releases).
+2. Baixe o `JARVIS-Setup.exe`.
+3. Execute o instalador e clique em **Instalar**.
+4. Abra o **JARVIS** pelo Menu Iniciar.
+
+Não é necessário instalar Python, pip ou dependência nenhuma, e o instalador
+não pede senha de administrador — ele instala só para o seu usuário, em
+`%LOCALAPPDATA%\Programs\JARVIS`.
+
+Suas contas, conversas, memória e configurações ficam em
+`%LOCALAPPDATA%\JARVIS`, **fora** da pasta de instalação: atualizar o JARVIS
+preserva tudo, e desinstalar só apaga seus dados se você confirmar
+explicitamente.
+
+O executável ainda não é assinado, então o Windows pode mostrar
+"O Windows protegeu o seu computador" na primeira execução. Clique em
+**Mais informações** → **Executar assim mesmo**. Confira o SHA-256 do arquivo
+contra o `SHA256SUMS.txt` da mesma release se quiser verificar a integridade.
+
+### Para desenvolver o JARVIS
+
+O que vem abaixo é para rodar o projeto a partir do código-fonte. Para gerar o
+instalador, ver [`docs/BUILD_WINDOWS.md`](docs/BUILD_WINDOWS.md).
+
+## Como executar (desenvolvimento)
 
 Requer Python 3.10+ (testado com 3.14).
 

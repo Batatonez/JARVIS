@@ -93,5 +93,21 @@ Thumbs.db
 *.exe
 *.msi
 out/
+# O FONTE do packaging é versionado de propósito — só os artefatos ficam de
+# fora. Sem estas exceções, o `*.exe` acima e o `dist/`/`build/` já cobririam
+# tudo, mas o `.iss`/`.spec`/scripts precisam estar no repositório para o
+# build ser reproduzível por outra pessoa.
+!packaging/
+!packaging/**
+!scripts/build_windows.py
+
+# DEPOIS das exceções acima, de propósito: no Git a última regra que casa é
+# a que vale, então este arquivo precisa vir por último para não ser
+# reincluído por `!packaging/**`.
+#
+# Metadados de versão do Windows: GERADOS por scripts/build_windows.py a
+# partir da versão oficial do projeto. Versionar o arquivo criaria uma
+# segunda fonte de versão, que é exatamente o que o build evita.
+packaging/windows/version_info.txt
 
 CLAUDE.before-ruflo.md

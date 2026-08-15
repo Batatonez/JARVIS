@@ -21,6 +21,27 @@ from config.settings import settings
 from frontend.bridge import JarvisBridge
 from services.vosk_model_manager import VoiceModelManager
 
+def _qml_dir() -> Path:
+    """Diretório do QML, resolvido em RUNTIME e não no import.
+
+    Rodando do código-fonte é `frontend/qml/` ao lado deste arquivo — o
+    comportamento de sempre. Empacotado, `__file__` aponta para dentro do
+    arquivo de bytecode do bundle, que não é um diretório de verdade; o
+    caminho correto é relativo à raiz de recursos que o PyInstaller expõe
+    (ver `config/paths.py::resource_root`).
+
+    Resolver em runtime, e não numa constante de módulo, é o que permite
+    `JARVIS_USER_DATA`/`sys._MEIPASS` valerem — uma constante seria
+    congelada no momento do import, antes de o ambiente estar montado."""
+    from config.paths import is_frozen, resource_root
+
+    if is_frozen():
+        return resource_root() / "frontend" / "qml"
+    return Path(__file__).resolve().parent / "qml"
+
+
+# Mantido como constante para os chamadores existentes (testes de smoke de
+# QML importam este nome). Em desenvolvimento é exatamente o valor de antes.
 QML_DIR = Path(__file__).resolve().parent / "qml"
 
 logger = logging.getLogger(__name__)
@@ -51,10 +72,11 @@ def run() -> int:
     voice_model_manager = VoiceModelManager(models_dir=settings.stt_models_dir)
     bridge = JarvisBridge(account_manager, voice_model_manager, dev_mode=settings.dev_mode)
 
+    qml_dir = _qml_dir()
     engine = QQmlApplicationEngine()
-    engine.addImportPath(str(QML_DIR))
+    engine.addImportPath(str(qml_dir))
     engine.rootContext().setContextProperty("bridge", bridge)
-    engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+    engine.load(QUrl.fromLocalFile(str(qml_dir / "Main.qml")))
 
     if not engine.rootObjects():
         logger.error("Falha ao carregar a interface (Main.qml) — veja os erros de QML acima.")

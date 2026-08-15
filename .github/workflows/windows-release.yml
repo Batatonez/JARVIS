@@ -1,0 +1,80 @@
+# Build da distribuição Windows do JARVIS.
+#
+# Dispara em duas situações:
+#   - tag `v*` empurrada        -> build + anexa os artefatos à release
+#   - acionamento manual        -> build + artefatos para download, sem release
+#
+# NENHUM SEGREDO É NECESSÁRIO. O build não usa chave de provider, conta de
+# e-mail nem credencial alguma: um JARVIS empacotado sem chave nenhuma é um
+# build válido — ele abre e mostra os providers como "não configurado", que é
+# exatamente o que o usuário final vê antes de configurar os dele. Se este
+# workflow um dia precisar de um segredo para BUILDAR, é sinal de que algo
+# secreto vazou para dentro do artefato.
+
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # necessário só para anexar assets à release da tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-build.txt
+
+      # A suíte roda ANTES do build de propósito: empacotar código quebrado
+      # só produz um instalador que falha mais tarde, na máquina do usuário.
+      - name: Rodar a suíte de testes
+        run: python -m unittest discover -s tests
+
+      # O Inno Setup 6 já vem pré-instalado nos runners `windows-latest`.
+      # O passo abaixo apenas confirma e expõe o caminho — se um dia sair da
+      # imagem, o build falha aqui com uma mensagem clara em vez de gerar um
+      # standalone sem installer silenciosamente.
+      - name: Localizar o Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 não encontrado no runner." }
+          echo "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Gerar standalone e installer
+        run: python scripts/build_windows.py
+
+      - name: Publicar artefatos do build
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-windows
+          path: |
+            dist/JARVIS-Setup-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      # Só quando o disparo veio de uma tag: acionamento manual gera
+      # artefatos para inspeção, nunca uma release pública.
+      - name: Anexar à release da tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/JARVIS-Setup-*.exe
+            dist/SHA256SUMS.txt
+          draft: true # revisão humana antes de publicar
+          generate_release_notes: true

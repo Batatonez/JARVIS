@@ -1,8 +1,20 @@
 """Configuração central do JARVIS: nomes, versão e caminhos importantes.
 
 Nenhum caminho aqui é absoluto/hardcoded para uma máquina específica — tudo é
-derivado de `PROJECT_ROOT`, calculado a partir da localização deste arquivo,
-para que o projeto funcione em qualquer computador ou diretório.
+derivado dos dois caminhos-raiz de `config/paths.py`, para que o projeto
+funcione em qualquer computador, em qualquer diretório, e também quando
+empacotado como aplicativo instalado.
+
+**Dois caminhos-raiz, não um** (packaging): `RESOURCE_ROOT` é o que acompanha
+o programa e é somente leitura (QML, migrações, defaults); `USER_DATA_ROOT` é
+onde vive o que o usuário produz (contas, chats, memória, logs, modelos) e
+precisa sobreviver a atualizações. Rodando do código-fonte os dois apontam
+para a raiz do repositório, exatamente como sempre foi — ver `config/paths.py`
+para o porquê da separação e por que ela não afeta desenvolvimento.
+
+`PROJECT_ROOT` continua existindo e continua sendo a raiz do repositório em
+desenvolvimento: vários módulos e testes o importam, e renomeá-lo seria uma
+mudança de fachada sem ganho.
 """
 
 import os
@@ -10,8 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.env_loader import load_project_env
+from config.paths import resource_root, user_data_root
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RESOURCE_ROOT = resource_root()
+USER_DATA_ROOT = user_data_root()
+PROJECT_ROOT = RESOURCE_ROOT
 
 
 def _env_int(name: str, default: int) -> int:
@@ -57,7 +72,12 @@ def _env_flag(name: str, default: bool) -> bool:
 # Os defaults deste dataclass são `os.environ.get(...)` resolvidos no momento
 # em que a classe é criada: carregar o `.env` depois disto não teria efeito.
 # Precedência: variável já no ambiente > .env > default (ver env_loader).
-load_project_env(PROJECT_ROOT)
+#
+# Packaging: o `.env` é procurado no diretório de DADOS DO USUÁRIO, não no de
+# instalação. Em desenvolvimento os dois são a raiz do repositório e nada
+# muda; num app instalado, é o único dos dois onde o usuário pode escrever —
+# e o instalador nunca embute um `.env` (ver docs/BUILD_WINDOWS.md).
+load_project_env(USER_DATA_ROOT)
 
 
 @dataclass(frozen=True)
@@ -69,29 +89,29 @@ class Settings:
     # Memória legacy (pré-contas, v0.1-v0.8) — nunca apagada, só lida uma vez
     # por `services/memory_migration.py` para copiar para a primeira conta
     # criada neste ambiente. Ver docs/architecture.md, seção Contas.
-    memory_dir: Path = PROJECT_ROOT / "memory"
-    profile_path: Path = PROJECT_ROOT / "memory" / "profile.md"
-    preferences_path: Path = PROJECT_ROOT / "memory" / "preferences.md"
+    memory_dir: Path = USER_DATA_ROOT / "memory"
+    profile_path: Path = USER_DATA_ROOT / "memory" / "profile.md"
+    preferences_path: Path = USER_DATA_ROOT / "memory" / "preferences.md"
 
-    log_dir: Path = PROJECT_ROOT / "logs"
-    log_path: Path = PROJECT_ROOT / "logs" / "jarvis.log"
+    log_dir: Path = USER_DATA_ROOT / "logs"
+    log_path: Path = USER_DATA_ROOT / "logs" / "jarvis.log"
 
     # --- Dados locais (v0.9 — contas, chats, modelos de voz) ---
     # Tudo aqui é local e pessoal: nunca vai para o Git (ver .gitignore).
-    data_dir: Path = PROJECT_ROOT / "data"
-    db_path: Path = PROJECT_ROOT / "data" / "jarvis.db"
-    users_dir: Path = PROJECT_ROOT / "data" / "users"
+    data_dir: Path = USER_DATA_ROOT / "data"
+    db_path: Path = USER_DATA_ROOT / "data" / "jarvis.db"
+    users_dir: Path = USER_DATA_ROOT / "data" / "users"
     # Token de sessão local (bearer opaco, nunca a senha) para continuar
     # logado entre execuções — ver services/session_store.py.
-    session_token_path: Path = PROJECT_ROOT / "data" / "session.local"
+    session_token_path: Path = USER_DATA_ROOT / "data" / "session.local"
     # Modelos de voz baixados pelo próprio JARVIS (nunca automaticamente —
     # ver services/vosk_model_manager.py). Movido de `voice_models/` (v0.7)
     # para dentro de `data/` — mesma regra de "nunca no Git" que o resto.
-    stt_models_dir: Path = PROJECT_ROOT / "data" / "models" / "vosk"
+    stt_models_dir: Path = USER_DATA_ROOT / "data" / "models" / "vosk"
     # v1.3 — modelo do faster-whisper (engine principal de STT). Diretório
     # separado do Vosk: são formatos e fontes diferentes, e o usuário pode
     # ter os dois instalados (principal + fallback).
-    whisper_models_dir: Path = PROJECT_ROOT / "data" / "models" / "whisper"
+    whisper_models_dir: Path = USER_DATA_ROOT / "data" / "models" / "whisper"
 
     dev_mode: bool = _env_flag("JARVIS_DEV", False)
 
@@ -152,7 +172,7 @@ class Settings:
     # Não versionado: ver .gitignore ("data/").
     stt_model_path: Path = Path(
         os.environ.get("JARVIS_STT_MODEL_PATH", "").strip()
-        or str(PROJECT_ROOT / "data" / "models" / "vosk" / "vosk-model-small-pt")
+        or str(USER_DATA_ROOT / "data" / "models" / "vosk" / "vosk-model-small-pt")
     )
     # Substring (case-insensitive) do nome de uma voz SAPI5 instalada no
     # Windows. Vazio/None = escolhe automaticamente (preferência por uma voz

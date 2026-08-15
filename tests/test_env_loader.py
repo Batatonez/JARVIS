@@ -279,7 +279,11 @@ class SettingsIntegrationTests(unittest.TestCase):
         import config.settings as settings_module
 
         source = inspect.getsource(settings_module)
-        loader_line = source.index("load_project_env(PROJECT_ROOT)")
+        # O argumento passou a ser `USER_DATA_ROOT` (packaging: num app
+        # instalado o `.env` mora no diretório de dados do usuário, o único
+        # dos dois onde se pode escrever). A PROPRIEDADE medida aqui é a
+        # mesma de sempre — a ordem da chamada.
+        loader_line = source.index("load_project_env(USER_DATA_ROOT)")
         dataclass_line = source.index("class Settings")
         # A chamada precisa vir ANTES da definição da classe: os defaults são
         # avaliados na criação do dataclass.
