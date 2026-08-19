@@ -48,6 +48,8 @@ from services.providers.exceptions import (
     ProviderUnavailableError,
     RateLimitedError,
 )
+from services.accuracy.service import AccuracyService
+from services.accuracy.verifier import ResponseVerifier
 from services.providers.router import ProviderRouter
 from services.providers.types import ProviderId, RouteRequest
 from services.runtime_identity import build_system_prompt as build_runtime_system_prompt
@@ -94,6 +96,7 @@ class ProviderRouterAIService(AIService):
         timeout_s: float = 60.0,
         max_history_messages: int = 20,
         preferred_provider: ProviderId | None = None,
+        accuracy_service=None,
     ) -> None:
         self._router = router
         self._free_only = free_only
@@ -108,6 +111,15 @@ class ProviderRouterAIService(AIService):
         self._system_prompt: str = ""
         self._preferences = None
         self._history: list[tuple[str, str]] = []
+        # Camada de precisão. Sem estado entre requests: o serviço é
+        # reutilizado, mas todo estado de geração vive no
+        # `AccuracyRequestContext` criado a cada `ask()`.
+        self._accuracy = accuracy_service or AccuracyService(
+            verifier=ResponseVerifier(self)
+        )
+        # Só o contexto da ÚLTIMA resposta, para o HUD ler atividade e
+        # fontes. Substituído a cada request — nunca acumulado.
+        self._last_accuracy_context = None
         self._session_active = False
         self._last_result_summary: dict[str, object] | None = None
 
@@ -156,8 +168,31 @@ class ProviderRouterAIService(AIService):
         if not self.is_available():
             raise AIServiceUnavailableError("Nenhum provider de IA está configurado.")
 
+        # --- Accuracy Layer -------------------------------------------
+        # Decide COMO esta mensagem deve ser respondida antes de pedir a
+        # resposta. É o que impede o modelo de preencher a lacuna de um
+        # termo que não reconheceu (ver services/accuracy/).
+        #
+        # O contexto é criado por request e descartado no fim — nada aqui
+        # atravessa turnos.
+        context = self._accuracy.begin(message)
+        await self._accuracy.gather_evidence(context, message)
+        guidance = self._accuracy.build_guidance(context)
+        self._last_accuracy_context = context
+
+        # A orientação entra no PROMPT desta mensagem, não no system prompt
+        # da sessão: ela vale para esta pergunta e não deve contaminar as
+        # seguintes. O system prompt continua sendo o mesmo para todos os
+        # candidatos da cadeia, preservando idioma no fallback (v1.6).
+        prompt = message
+        if guidance:
+            prompt = (
+                f"{message}\n\n--- Orientação de precisão (interna, não repita ao usuário) ---\n"
+                f"{guidance}"
+            )
+
         request = RouteRequest(
-            prompt=message,
+            prompt=prompt,
             system_prompt=self._system_prompt or None,
             history=tuple(self._history[-self._max_history_messages :]),
             max_tokens=self._max_tokens,
@@ -200,13 +235,59 @@ class ProviderRouterAIService(AIService):
             # provider — que continua livre para recusar de novo se for o
             # caso. O que deixa de existir é a recusa se auto-perpetuando.
             logger.info("Recusa estruturada não entra no histórico da sessão (escopo: esta request).")
+            # Recusa NÃO é verificada: mandar uma recusa ao verificador e
+            # depois "revisar" seria usar a camada de precisão para tentar
+            # obter o que a safety negou. A cadeia termina aqui, como desde
+            # a v1.6.
+            self._accuracy.finish(context)
             self._last_result_summary = self._summarize(result)
             return reply
 
+        reply = await self._verify_and_maybe_revise(context, request, reply)
+
+        self._accuracy.finish(context)
+        # O histórico guarda a mensagem ORIGINAL do usuário, não o prompt
+        # com a orientação de precisão: a orientação vale para aquela
+        # pergunta e reenviá-la em todo turno a transformaria em regra
+        # permanente da conversa.
         self._history.append(("user", message))
         self._history.append(("assistant", reply))
         self._last_result_summary = self._summarize(result)
         return reply
+
+    async def _verify_and_maybe_revise(self, context, request, draft: str) -> str:
+        """Verifica o rascunho e revisa NO MÁXIMO uma vez.
+
+        Sem laço de propósito: insistir até passar otimizaria para enganar o
+        verificador em vez de para dizer a verdade. Se a segunda versão ainda
+        não se sustenta, o certo é a resposta assumir a incerteza."""
+        from dataclasses import replace as _replace
+
+        from services.accuracy.models import VerificationStatus
+        from services.accuracy.verifier import REVISION_INSTRUCTION
+
+        result = await self._accuracy.verify(context, draft)
+        if result.status is not VerificationStatus.NEEDS_REVISION:
+            return draft
+
+        revision_request = _replace(
+            request,
+            prompt=f"{draft}\n\n--- {REVISION_INSTRUCTION} ---",
+            history=(),
+        )
+        try:
+            revised = await self._router.execute(revision_request)
+        except ProviderError:
+            # A revisão falhou; o rascunho original já existe e é melhor que
+            # nenhuma resposta.
+            logger.info("Revisão não pôde ser gerada; mantendo o rascunho original.")
+            return draft
+
+        revised_text = (revised.output or "").strip()
+        if not revised_text:
+            return draft
+        context.verification = _replace(result, revised=True)
+        return revised_text
 
     @staticmethod
     def _summarize(result) -> dict[str, object]:
