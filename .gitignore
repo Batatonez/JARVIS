@@ -110,4 +110,13 @@ out/
 # segunda fonte de versão, que é exatamente o que o build evita.
 packaging/windows/version_info.txt
 
+# --- Arte de origem ---
+# O PNG do logo em alta resolução fica FORA do repositório: é um arquivo
+# grande, muda pouco, e o que o projeto precisa versionado é o resultado
+# (`packaging/windows/assets/jarvis.ico`, gerado por scripts/make_icon.py).
+# O arquivo continua no disco de quem o tem — só não é rastreado pelo Git.
+JARVIS logo.png
+jarvis-logo.png
+logo.png
+
 CLAUDE.before-ruflo.md

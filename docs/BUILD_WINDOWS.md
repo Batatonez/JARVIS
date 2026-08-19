@@ -164,14 +164,33 @@ não é instantânea nem com certificado.
 
 ## Ícone
 
-O projeto **ainda não tem um ícone próprio**. O build procura
-`packaging/windows/assets/jarvis.ico` e segue sem ele se não existir — o
-executável usa o ícone padrão do Windows.
+O ícone vive em `packaging/windows/assets/jarvis.ico` e é **versionado**. Ele
+é usado automaticamente pelo executável, pelo instalador, pelo atalho do Menu
+Iniciar, pelo atalho da Área de Trabalho e pela entrada em Aplicativos
+Instalados.
 
-Isto está registrado como limitação de propósito: gerar arte automaticamente
-não é decisão de um script de build. Para resolver, coloque um `.ico`
-(recomendado: 16/32/48/256 px no mesmo arquivo) naquele caminho e rode o
-build de novo. Nada mais precisa mudar.
+O `.ico` tem nove resoluções (16, 20, 24, 32, 40, 48, 64, 128, 256) porque o
+Windows escolhe uma diferente em cada contexto — barra de título, barra de
+tarefas, Explorer, visualização grande — e as intermediárias (20/24/40)
+aparecem em DPI escalonado. Um `.ico` de um tamanho só faz o Windows
+reamostrar na hora, e o resultado em 16px fica borrado.
+
+Para trocar a arte:
+
+```bash
+python scripts/make_icon.py "JARVIS logo.png"
+```
+
+Depois commite o `.ico` gerado. O script precisa do Pillow; **o build não** —
+ele apenas consome o arquivo já pronto.
+
+O PNG de origem em alta resolução **não é versionado** (ver `.gitignore`): é
+grande, muda pouco, e o que o repositório precisa é do resultado.
+
+O script só redimensiona — não recorta fora do centro, não remove fundo e não
+ajusta cor. Se o logo tem fundo escuro opaco, o ícone terá fundo escuro
+opaco; transformar isso em transparência é decisão de design, não de
+conversão.
 
 ## Licença
 
